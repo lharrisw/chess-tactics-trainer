@@ -1,0 +1,47 @@
+name: Validate trainer source
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check Python syntax
+        run: python -m py_compile scripts/build_pages.py
+
+      - name: Build sample puzzle site
+        run: |
+          python scripts/build_pages.py \
+            --source tests/fixtures/lichess_sample.csv \
+            --site-dir _site-test \
+            --limit 3 \
+            --chunk-size 2 \
+            --min-popularity -100 \
+            --min-plays 0
+
+      - name: Validate manifest and JavaScript syntax
+        run: |
+          python - <<'PY'
+          import gzip, json, re
+          from pathlib import Path
+          root = Path("_site-test/puzzles")
+          manifest = json.loads((root / "manifest.json").read_text())
+          assert manifest["count"] == 3
+          assert sum(c["count"] for c in manifest["chunks"]) == 3
+          for chunk in manifest["chunks"]:
+              with gzip.open(root / chunk["file"], "rt", encoding="utf-8") as handle:
+                  payload = json.load(handle)
+              assert payload["v"] == 1 and payload["p"]
+          html = Path("index.html").read_text()
+          script = re.search(r"<script>(.*)</script>", html, re.S).group(1)
+          Path("app-check.js").write_text(script)
+          PY
+          node --check app-check.js

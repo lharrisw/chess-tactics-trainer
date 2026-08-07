@@ -1,14 +1,16 @@
-/* Chess Tactics Trainer — Build 1 correctness foundation
+/* Chess Tactics Trainer — Build 1.1 puzzle UX + correctness foundation
  *
  * Loaded after the existing application by scripts/apply_correctness_foundation.py.
  * It deliberately does not replace the current board, database, or million-puzzle
- * loader. It changes only answer acceptance for mating puzzles and the wording
- * used to describe puzzle correctness.
+ * loader. Build 1.1 preserves objective-aware mating answers and adds two
+ * puzzle-UX guarantees: the opponent's setup move is shown before Lichess
+ * puzzles, and proven wrong moves remain visible until the user presses
+ * Try again.
  */
 (function () {
   'use strict';
 
-  const BUILD_ID = 'correctness-foundation-1';
+  const BUILD_ID = 'correctness-foundation-1.1';
 
   function mateTargetForPuzzle(p) {
     if (!p) return null;
@@ -163,6 +165,102 @@
     return result;
   }
 
+
+  /*
+   * Lichess puzzle records start one ply BEFORE the tactical position.
+   * The first UCI move is the opponent's setup/blunder move; the solver's
+   * solution begins with the second UCI move.
+   *
+   * The base app correctly applies that setup move when normalizing a puzzle,
+   * but it previously discarded the pre-move FEN and setup move. Preserve both
+   * here so startPuzzle can actually SHOW the opponent's move.
+   */
+  if (typeof normalizeCloudRecord === 'function') {
+    const previousNormalizeCloudRecord = normalizeCloudRecord;
+    normalizeCloudRecord = function (r) {
+      const p = previousNormalizeCloudRecord(r);
+      if (p && Array.isArray(r)) {
+        const all = String(r[2] || '').trim().split(/\s+/).filter(Boolean);
+        if (r[1] && all[0]) {
+          p.introFen = String(r[1]);
+          p.introMove = all[0];
+        }
+      }
+      return p;
+    };
+  }
+
+  if (typeof normalizeLichess === 'function') {
+    const previousNormalizeLichess = normalizeLichess;
+    normalizeLichess = function (cols, h) {
+      const p = previousNormalizeLichess(cols, h);
+      if (p && cols && h) {
+        const all = String(cols[h.Moves] || '').trim().split(/\s+/).filter(Boolean);
+        if (cols[h.FEN] && all[0]) {
+          p.introFen = String(cols[h.FEN]);
+          p.introMove = all[0];
+        }
+      }
+      return p;
+    };
+  }
+
+  let introTimer = null;
+  let tryAgainWrap = null;
+  let pendingWrong = null;
+
+  function removeTryAgainUI() {
+    if (tryAgainWrap && tryAgainWrap.parentNode) {
+      tryAgainWrap.parentNode.removeChild(tryAgainWrap);
+    }
+    tryAgainWrap = null;
+  }
+
+  function clearPendingWrong() {
+    removeTryAgainUI();
+    pendingWrong = null;
+  }
+
+  function showTryAgainButton(rec) {
+    removeTryAgainUI();
+    pendingWrong = rec;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'btns';
+    wrap.id = 'ct-try-again-wrap';
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'act primary wide';
+    button.id = 'ct-try-again';
+    button.textContent = 'Try again';
+
+    button.addEventListener('click', function () {
+      if (!pendingWrong || !S.eng) return;
+
+      const wrongRec = pendingWrong;
+      pendingWrong = null;
+      removeTryAgainUI();
+
+      S.eng.unmake(wrongRec);
+      S.busy = false;
+      S.selected = null;
+      S.targets = [];
+      renderSolve();
+      setFb(S.fbEl, 'Try again — find the best move.', 'neutral');
+
+      if (S.hintEl) S.hintEl.disabled = false;
+      if (S.solEl) S.solEl.disabled = false;
+    });
+
+    wrap.appendChild(button);
+
+    if (S.fbEl && S.fbEl.parentNode) {
+      S.fbEl.insertAdjacentElement('afterend', wrap);
+    }
+    tryAgainWrap = wrap;
+  }
+
   function levelSummary(p) {
     const moves = p.solverMoves || Math.ceil((p.line || []).length / 2);
     const policy = acceptancePolicyForPuzzle(p);
@@ -172,12 +270,81 @@
   }
 
   // Remember the actual puzzle object. The original app stores the line but
-  // not the puzzle metadata in S.
+  // not the puzzle metadata in S. For Lichess records, also show the opponent's
+  // setup move before enabling the board for the solver.
   const previousStartPuzzle = startPuzzle;
   startPuzzle = function (p, ui) {
+    if (introTimer) {
+      clearTimeout(introTimer);
+      introTimer = null;
+    }
+    clearPendingWrong();
+
     previousStartPuzzle(p, ui);
+
     S.puzzle = p;
     S.acceptancePolicy = acceptancePolicyForPuzzle(p);
+    S.puzzleSerial = (S.puzzleSerial || 0) + 1;
+    const serial = S.puzzleSerial;
+
+    if (!p.introFen || !p.introMove) return;
+
+    try {
+      const introEng = Engine();
+      introEng.fromFEN(p.introFen);
+      const setup = introEng.findLegalUci(String(p.introMove));
+      if (!setup) return;
+
+      // previousStartPuzzle has already oriented the board from the solver's
+      // perspective. Keep that orientation while temporarily showing the
+      // position before the opponent's move.
+      S.eng = introEng;
+      S.busy = true;
+      S.selected = null;
+      S.targets = [];
+
+      if (S.hintEl) S.hintEl.disabled = true;
+      if (S.solEl) S.solEl.disabled = true;
+
+      drawBoard(S.eng, { selectable: false });
+      setFb(S.fbEl, "Watch the opponent's move.", 'neutral');
+
+      introTimer = setTimeout(function () {
+        introTimer = null;
+
+        // A fast Next/Prev/filter change may have loaded another puzzle while
+        // the intro timer was running. Never let an old timer touch a new one.
+        if (S.puzzleSerial !== serial || S.puzzle !== p) return;
+
+        const liveSetup = S.eng.findLegalUci(String(p.introMove));
+        if (!liveSetup) {
+          S.busy = false;
+          renderSolve();
+          return;
+        }
+
+        S.eng.make(liveSetup);
+        S.busy = false;
+
+        if (S.hintEl) S.hintEl.disabled = false;
+        if (S.solEl) S.solEl.disabled = false;
+
+        // Keep the opponent's move highlighted until the solver interacts
+        // with the board. That makes the tactical trigger easy to inspect.
+        drawBoard(S.eng, {
+          selectable: true,
+          last: { from: liveSetup.from, to: liveSetup.to }
+        });
+        setFb(S.fbEl, 'Your move — find the best continuation.', 'neutral');
+      }, 650);
+    } catch (_) {
+      // If intro rendering ever fails, retain the already-working puzzle
+      // position rather than preventing the user from solving.
+      S.eng = Engine();
+      S.eng.fromFEN(p.fen);
+      S.busy = false;
+      renderSolve();
+    }
   };
 
   // Replace the text "unique best move" with wording that distinguishes an
@@ -233,8 +400,19 @@
     S.busy = true;
     S.selected = null;
     S.targets = [];
+
+    // Leave the user's wrong move ON THE BOARD until they explicitly choose
+    // Try again. This gives them time to inspect both the position and the
+    // full feedback message.
     drawBoard(S.eng, { selectable: false, last: { from: mv.from, to: mv.to } });
-    setFb(S.fbEl, message || 'Legal move — but it does not meet the objective. Taking it back…', 'bad');
+    setFb(
+      S.fbEl,
+      message || 'That move does not meet the objective. Your move is left on the board so you can inspect the position.',
+      'bad'
+    );
+
+    if (S.hintEl) S.hintEl.disabled = true;
+    if (S.solEl) S.solEl.disabled = true;
 
     if (breakStreak !== false && S.streakBreak) S.streakBreak();
 
@@ -242,12 +420,7 @@
     void shellEl.offsetWidth;
     shellEl.classList.add('wrong');
 
-    setTimeout(function () {
-      S.eng.unmake(rec);
-      S.busy = false;
-      renderSolve();
-      setFb(S.fbEl, 'Try again.', 'neutral');
-    }, 700);
+    showTryAgainButton(rec);
   }
 
   // Core Build 1 change.
@@ -258,6 +431,7 @@
     const match = sameMove(mv, exp);
 
     if (match) {
+      clearPendingWrong();
       S.eng.make(mv);
       S.step++;
       S.selected = null;
@@ -273,6 +447,7 @@
     // the user has achieved the objective. Never reject mate merely because
     // a database stored a different mating move.
     if (S.eng.isMate()) {
+      clearPendingWrong();
       S.selected = null;
       S.targets = [];
       S.step = S.line.length;
@@ -282,7 +457,7 @@
     }
 
     if (policy.kind !== 'forcedMate') {
-      rejectMove(rec, mv, 'Legal move — but not the stored answer here. Taking it back…', true);
+      rejectMove(rec, mv, 'That move is legal, but it does not match the verified solution for this puzzle. Your move is left on the board so you can inspect the position.', true);
       return;
     }
 
@@ -292,7 +467,7 @@
     // If the objective was Mate in N and this move has not mated while no
     // attacker moves remain, it cannot satisfy that objective.
     if (remainingAfterThisMove <= 0) {
-      rejectMove(rec, mv, 'This move does not complete the required mate. Taking it back…', true);
+      rejectMove(rec, mv, 'This move does not complete the required mate. Your move is left on the board so you can inspect the position.', true);
       return;
     }
 
@@ -340,7 +515,7 @@
       rejectMove(
         rec,
         mv,
-        'That move allows a defense that escapes the required mate. Taking it back…',
+        'That move allows at least one defense that escapes the required mate. Your move is left on the board so you can inspect the position.',
         true
       );
     }, 20);
@@ -350,7 +525,12 @@
     build: BUILD_ID,
     mateTargetForPuzzle,
     acceptancePolicyForPuzzle,
-    verifyForcedMateFromPosition
+    verifyForcedMateFromPosition,
+    ux: {
+      showsLichessSetupMove: true,
+      persistentWrongMoveFeedback: true,
+      explicitTryAgainButton: true
+    }
   };
 
   console.info('[Tactics Trainer] Loaded ' + BUILD_ID);

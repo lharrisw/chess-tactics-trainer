@@ -1,16 +1,15 @@
-/* Chess Tactics Trainer — Build 1.1 puzzle UX + correctness foundation
+/* Chess Tactics Trainer — Build 1.2 replay + progressive hints + correctness foundation
  *
  * Loaded after the existing application by scripts/apply_correctness_foundation.py.
  * It deliberately does not replace the current board, database, or million-puzzle
- * loader. Build 1.1 preserves objective-aware mating answers and adds two
- * puzzle-UX guarantees: the opponent's setup move is shown before Lichess
- * puzzles, and proven wrong moves remain visible until the user presses
- * Try again.
+ * loader. Build 1.2 preserves the Build 1/1.1 correctness and UX behavior,
+ * adds replay controls that can navigate ONLY through moves already shown,
+ * and adds progressive two-stage hints for each solver move.
  */
 (function () {
   'use strict';
 
-  const BUILD_ID = 'correctness-foundation-1.1';
+  const BUILD_ID = 'correctness-foundation-1.2';
 
   function mateTargetForPuzzle(p) {
     if (!p) return null;
@@ -209,6 +208,256 @@
   let tryAgainWrap = null;
   let pendingWrong = null;
 
+  // Build 1.2: a revealed-only move timeline. It NEVER contains future
+  // solution moves. Back/Forward can therefore never leak the hidden answer.
+  const Replay = {
+    wrap: null,
+    back: null,
+    forward: null,
+    note: null,
+    baseFen: null,
+    moves: [],
+    view: 0
+  };
+
+  // Progressive hint state is per solver turn.
+  let hintStage = 0;       // 0 = none, 1 = source piece, 2 = destination
+  let hintStep = -1;
+
+  function installUxStyle() {
+    if (document.getElementById('ct-build-1-2-style')) return;
+    const style = document.createElement('style');
+    style.id = 'ct-build-1-2-style';
+    style.textContent = `
+      .sq.ct-hint-source::after{
+        content:""; position:absolute; inset:5%; z-index:4; pointer-events:none;
+        border:4px solid rgba(255,215,64,.92); border-radius:9px;
+        box-shadow:0 0 0 2px rgba(20,20,20,.18);
+      }
+      .sq.ct-hint-target::after{
+        content:""; position:absolute; inset:12%; z-index:4; pointer-events:none;
+        border:5px solid rgba(129,182,76,.96); border-radius:50%;
+        box-shadow:0 0 0 2px rgba(20,20,20,.18);
+      }
+      #ct-replay-wrap{ margin-top:-3px; }
+      #ct-replay-note{ margin-top:-5px; text-align:center; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function boardCellForSquare(square) {
+    if (!boardEl || square == null || square < 0 || square > 63) return null;
+    const file = square % 8;
+    const rank = Math.floor(square / 8);
+    const row = S.flipped ? rank : 7 - rank;
+    const col = S.flipped ? 7 - file : file;
+    return boardEl.children[row * 8 + col] || null;
+  }
+
+  function clearHintVisuals() {
+    if (!boardEl) return;
+    boardEl.querySelectorAll('.ct-hint-source,.ct-hint-target').forEach(function (el) {
+      el.classList.remove('ct-hint-source', 'ct-hint-target');
+    });
+  }
+
+  function applyHintVisuals() {
+    clearHintVisuals();
+    if (hintStage <= 0 || hintStep !== S.step || S.busy || pendingWrong) return;
+    if (!S.line || S.step >= S.line.length) return;
+
+    const exp = toIdx(S.line[S.step]);
+    const source = boardCellForSquare(exp.from);
+    if (source) source.classList.add('ct-hint-source');
+
+    if (hintStage >= 2) {
+      const target = boardCellForSquare(exp.to);
+      if (target) target.classList.add('ct-hint-target');
+    }
+  }
+
+  function resetHintState() {
+    hintStage = 0;
+    hintStep = S.step;
+    if (S.hintEl) {
+      S.hintEl.textContent = 'Hint';
+      S.hintEl.disabled = !!S.solved || !!S.busy || !!pendingWrong || Replay.view < Replay.moves.length;
+    }
+    clearHintVisuals();
+  }
+
+  function syncHintButton() {
+    if (!S.hintEl) return;
+
+    if (S.solved || S.busy || pendingWrong || Replay.view < Replay.moves.length) {
+      S.hintEl.disabled = true;
+      return;
+    }
+
+    if (hintStep !== S.step) {
+      hintStage = 0;
+      hintStep = S.step;
+    }
+
+    if (hintStage === 0) {
+      S.hintEl.textContent = 'Hint';
+      S.hintEl.disabled = false;
+    } else if (hintStage === 1) {
+      S.hintEl.textContent = 'More hint';
+      S.hintEl.disabled = false;
+    } else {
+      S.hintEl.textContent = 'Hint shown';
+      S.hintEl.disabled = true;
+    }
+  }
+
+  function initReplay(p) {
+    Replay.baseFen = p && p.introFen ? String(p.introFen) : String((p && p.fen) || '');
+    Replay.moves = [];
+    Replay.view = 0;
+    updateReplayButtons();
+  }
+
+  function appendRevealedMove(uci) {
+    if (!uci) return;
+    Replay.moves.push(String(uci));
+    Replay.view = Replay.moves.length;
+    updateReplayButtons();
+  }
+
+  function replayEngineAt(view) {
+    const e = Engine();
+    e.fromFEN(Replay.baseFen);
+
+    for (let i = 0; i < view; i++) {
+      const m = e.findLegalUci(Replay.moves[i]);
+      if (!m) throw new Error('Could not replay revealed move ' + Replay.moves[i]);
+      e.make(m);
+    }
+    return e;
+  }
+
+  function updateReplayButtons() {
+    if (!Replay.back || !Replay.forward) return;
+
+    const blocked = !!S.busy || !!pendingWrong || !Replay.baseFen;
+    Replay.back.disabled = blocked || Replay.view <= 0;
+    Replay.forward.disabled = blocked || Replay.view >= Replay.moves.length;
+
+    if (Replay.note) {
+      if (!Replay.moves.length) {
+        Replay.note.textContent = 'Replay becomes available after a move has been shown.';
+      } else if (Replay.view < Replay.moves.length) {
+        Replay.note.textContent =
+          'Reviewing revealed moves only · position ' + Replay.view + '/' + Replay.moves.length;
+      } else {
+        Replay.note.textContent =
+          'Back / Forward replays only moves already shown — never the hidden solution.';
+      }
+    }
+  }
+
+  function showReplayPosition() {
+    if (!Replay.baseFen || Replay.view >= Replay.moves.length) {
+      // Live position.
+      baseRenderSolve();
+      applyHintVisuals();
+      syncHintButton();
+      if (S.solEl) S.solEl.disabled = !!S.solved || !!S.busy || !!pendingWrong;
+      updateReplayButtons();
+      return;
+    }
+
+    try {
+      const e = replayEngineAt(Replay.view);
+      let last = null;
+      if (Replay.view > 0) {
+        const u = toIdx(Replay.moves[Replay.view - 1]);
+        last = { from: u.from, to: u.to };
+      }
+      drawBoard(e, { selectable: false, last: last });
+      clearHintVisuals();
+
+      if (S.hintEl) S.hintEl.disabled = true;
+      if (S.solEl) S.solEl.disabled = true;
+      updateReplayButtons();
+    } catch (_) {
+      Replay.view = Replay.moves.length;
+      baseRenderSolve();
+      updateReplayButtons();
+    }
+  }
+
+  function ensureReplayUI() {
+    installUxStyle();
+
+    if (Replay.wrap && Replay.wrap.isConnected) {
+      updateReplayButtons();
+      return;
+    }
+
+    const fb = S.fbEl;
+    if (!fb || !fb.parentNode) return;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'btns';
+    wrap.id = 'ct-replay-wrap';
+
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'act';
+    back.id = 'ct-replay-back';
+    back.textContent = '‹ Back';
+
+    const forward = document.createElement('button');
+    forward.type = 'button';
+    forward.className = 'act';
+    forward.id = 'ct-replay-forward';
+    forward.textContent = 'Forward ›';
+
+    const note = document.createElement('div');
+    note.className = 'note';
+    note.id = 'ct-replay-note';
+
+    back.addEventListener('click', function () {
+      if (back.disabled) return;
+      Replay.view = Math.max(0, Replay.view - 1);
+      showReplayPosition();
+    });
+
+    forward.addEventListener('click', function () {
+      if (forward.disabled) return;
+      Replay.view = Math.min(Replay.moves.length, Replay.view + 1);
+      showReplayPosition();
+    });
+
+    wrap.appendChild(back);
+    wrap.appendChild(forward);
+
+    fb.insertAdjacentElement('afterend', wrap);
+    wrap.insertAdjacentElement('afterend', note);
+
+    Replay.wrap = wrap;
+    Replay.back = back;
+    Replay.forward = forward;
+    Replay.note = note;
+    updateReplayButtons();
+  }
+
+  // Wrap the app's renderer so board flips and other redraws respect replay
+  // mode and persistent progressive-hint markings.
+  const baseRenderSolve = renderSolve;
+  renderSolve = function () {
+    if (Replay.baseFen && Replay.view < Replay.moves.length) {
+      showReplayPosition();
+      return;
+    }
+    baseRenderSolve();
+    applyHintVisuals();
+    syncHintButton();
+    updateReplayButtons();
+  };
+
   function removeTryAgainUI() {
     if (tryAgainWrap && tryAgainWrap.parentNode) {
       tryAgainWrap.parentNode.removeChild(tryAgainWrap);
@@ -246,10 +495,12 @@
       S.busy = false;
       S.selected = null;
       S.targets = [];
+      Replay.view = Replay.moves.length;
       renderSolve();
       setFb(S.fbEl, 'Try again — find the best move.', 'neutral');
+      syncHintButton();
+      updateReplayButtons();
 
-      if (S.hintEl) S.hintEl.disabled = false;
       if (S.solEl) S.solEl.disabled = false;
     });
 
@@ -287,7 +538,15 @@
     S.puzzleSerial = (S.puzzleSerial || 0) + 1;
     const serial = S.puzzleSerial;
 
-    if (!p.introFen || !p.introMove) return;
+    initReplay(p);
+    resetHintState();
+    ensureReplayUI();
+
+    if (!p.introFen || !p.introMove) {
+      Replay.view = Replay.moves.length;
+      renderSolve();
+      return;
+    }
 
     try {
       const introEng = Engine();
@@ -323,10 +582,12 @@
           return;
         }
 
+        const setupUci = S.eng.uci(liveSetup);
         S.eng.make(liveSetup);
+        appendRevealedMove(setupUci);
         S.busy = false;
+        resetHintState();
 
-        if (S.hintEl) S.hintEl.disabled = false;
         if (S.solEl) S.solEl.disabled = false;
 
         // Keep the opponent's move highlighted until the solver interacts
@@ -378,8 +639,11 @@
       });
 
       if (rm) {
+        const replyUci = S.eng.uci(rm);
         S.eng.make(rm);
         S.step++;
+        appendRevealedMove(replyUci);
+        resetHintState();
       } else {
         // A generated alternate line should always remain legal. If a future
         // refactor breaks that invariant, fail safely instead of corrupting
@@ -421,6 +685,7 @@
     shellEl.classList.add('wrong');
 
     showTryAgainButton(rec);
+    updateReplayButtons();
   }
 
   // Core Build 1 change.
@@ -432,10 +697,14 @@
 
     if (match) {
       clearPendingWrong();
+      const playedUci = S.eng.uci(mv);
       S.eng.make(mv);
+      appendRevealedMove(playedUci);
       S.step++;
       S.selected = null;
       S.targets = [];
+      hintStage = 0;
+      hintStep = -1;
       scheduleDefenseReply('Good — keep going.');
       return;
     }
@@ -448,6 +717,7 @@
     // a database stored a different mating move.
     if (S.eng.isMate()) {
       clearPendingWrong();
+      appendRevealedMove(S.eng.uci(mv));
       S.selected = null;
       S.targets = [];
       S.step = S.line.length;
@@ -487,9 +757,13 @@
       );
 
       if (verified.status === 'yes') {
+        const playedUci = S.eng.uci(mv);
         const prefix = S.line.slice(0, S.step);
-        S.line = prefix.concat([S.eng.uci(mv)], verified.line);
+        S.line = prefix.concat([playedUci], verified.line);
+        appendRevealedMove(playedUci);
         S.step++;
+        hintStage = 0;
+        hintStep = -1;
         S.busy = false;
         scheduleDefenseReply('Alternative forced mate — accepted. Keep going.');
         return;
@@ -521,6 +795,118 @@
     }, 20);
   };
 
+
+  // Build 1.2: progressive hints. First press identifies only the source
+  // piece. Second press identifies the destination square. We intentionally
+  // do NOT select the source piece with the normal move UI, because that
+  // would display every legal destination and make a queen hint noisy.
+  doHint = function () {
+    if (!S.active || S.solved || S.busy || pendingWrong) return;
+    if (Replay.view < Replay.moves.length) return;
+    if (!S.line || S.step >= S.line.length) return;
+
+    if (hintStep !== S.step) {
+      hintStage = 0;
+      hintStep = S.step;
+    }
+
+    const exp = toIdx(S.line[S.step]);
+    const pc = S.eng.get(exp.from);
+    if (!pc) return;
+
+    const names = {
+      p: 'pawn',
+      n: 'knight',
+      b: 'bishop',
+      r: 'rook',
+      q: 'queen',
+      k: 'king'
+    };
+    const pieceName = names[pc.t] || 'piece';
+
+    if (hintStage === 0) {
+      hintStage = 1;
+      S.selected = null;
+      S.targets = [];
+      S.streakBreak && S.streakBreak();
+      renderSolve();
+      setFb(
+        S.fbEl,
+        'Hint 1/2: Move the highlighted ' + pieceName + '. Press More hint for the destination square.',
+        'neutral'
+      );
+      syncHintButton();
+      return;
+    }
+
+    if (hintStage === 1) {
+      hintStage = 2;
+      S.selected = null;
+      S.targets = [];
+      renderSolve();
+      setFb(
+        S.fbEl,
+        'Hint 2/2: Move the highlighted ' + pieceName + ' to the highlighted destination square.',
+        'neutral'
+      );
+      syncHintButton();
+      return;
+    }
+  };
+
+  // Keep the revealed-only timeline in sync when the user deliberately asks
+  // to see the solution. Future moves enter Replay.moves only at the moment
+  // they are actually animated on the board.
+  doSolution = function () {
+    if (!S.active || S.solved || S.busy || pendingWrong) return;
+    if (Replay.view < Replay.moves.length) return;
+
+    S.revealed = true;
+    S.busy = true;
+    S.streakBreak && S.streakBreak();
+    clearHintVisuals();
+
+    if (S.hintEl) S.hintEl.disabled = true;
+    if (S.solEl) S.solEl.disabled = true;
+    updateReplayButtons();
+
+    (function play() {
+      if (S.step >= S.line.length) {
+        S.busy = false;
+        finishSolved();
+        Replay.view = Replay.moves.length;
+        renderSolve();
+        return;
+      }
+
+      const u = toIdx(S.line[S.step]);
+      const m = S.eng.legal().find(function (x) {
+        return x.from === u.from &&
+          x.to === u.to &&
+          ((!u.promo && !x.promo) ||
+           u.promo === (x.promo || null) ||
+           (x.promo && !u.promo));
+      });
+
+      if (!m) {
+        S.busy = false;
+        finishSolved();
+        Replay.view = Replay.moves.length;
+        renderSolve();
+        return;
+      }
+
+      const shownUci = S.eng.uci(m);
+      S.eng.make(m);
+      S.step++;
+      appendRevealedMove(shownUci);
+      renderSolve();
+      setTimeout(play, 470);
+    })();
+
+    setFb(S.fbEl, 'Solution:', 'neutral');
+  };
+
   window.TacticsCorrectness = {
     build: BUILD_ID,
     mateTargetForPuzzle,
@@ -529,7 +915,9 @@
     ux: {
       showsLichessSetupMove: true,
       persistentWrongMoveFeedback: true,
-      explicitTryAgainButton: true
+      explicitTryAgainButton: true,
+      revealedOnlyMoveReplay: true,
+      progressiveHintsPerMove: true
     }
   };
 

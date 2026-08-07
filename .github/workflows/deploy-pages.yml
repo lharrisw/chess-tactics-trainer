@@ -1,5 +1,4 @@
 name: Build and deploy million-puzzle trainer
-
 on:
   workflow_dispatch:
     inputs:
@@ -55,20 +54,40 @@ jobs:
             --min-popularity "${{ inputs.min_popularity }}" \
             --min-plays "${{ inputs.min_plays }}" \
             --min-solver-moves 1 \
-            --max-solver-moves 6
+            --max-solver-moves 6 \
+            --include-mate-in-one
+
+      - name: Apply objective-aware correctness layer
+        run: python scripts/apply_correctness_foundation.py --site-dir _site
 
       - name: Verify generated site
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
-          manifest = json.loads(Path("_site/puzzles/manifest.json").read_text())
+
+          site = Path("_site")
+          manifest = json.loads((site / "puzzles/manifest.json").read_text())
           expected = int("${{ inputs.puzzle_count }}")
+
           assert manifest["count"] == expected, (manifest["count"], expected)
           assert sum(chunk["count"] for chunk in manifest["chunks"]) == expected
-          assert Path("_site/index.html").is_file()
-          assert all((Path("_site/puzzles") / chunk["file"]).is_file() for chunk in manifest["chunks"])
-          print(f"Verified {manifest['count']:,} puzzles in {len(manifest['chunks'])} chunks")
+          assert manifest["quality"]["mateInOneExcluded"] is False
+          assert manifest["quality"]["uniqueFirstMove"] is False
+
+          assert (site / "index.html").is_file()
+          assert (site / "js/correctness-foundation.js").is_file()
+          assert all((site / "puzzles" / chunk["file"]).is_file() for chunk in manifest["chunks"])
+
+          html = (site / "index.html").read_text()
+          assert 'js/correctness-foundation.js' in html
+          assert 'objective-aware answers' in html
+          assert 'Mate-in-one records are excluded' not in html
+
+          print(
+              f"Verified {manifest['count']:,} puzzles in "
+              f"{len(manifest['chunks'])} chunks with objective-aware mate handling"
+          )
           PY
           du -sh _site
 

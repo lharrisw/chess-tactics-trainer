@@ -1,0 +1,25 @@
+Stockfish 18 browser-engine notice
+==================================
+
+Build 2.0 deploys the full single-threaded WebAssembly distribution from:
+
+  nmrugg/stockfish.js
+  release v18.0.0
+
+That release documents its upstream engine as official Stockfish 18 commit:
+
+  cb3d4ee
+
+Stockfish and Stockfish.js are distributed under the GNU General Public
+License version 3.
+
+The deployment workflow publishes alongside the browser binary:
+- Copying.txt (GPLv3 license)
+- AUTHORS
+- SOURCE.txt
+- the exact stockfish.js v18.0.0 source archive
+- generated SHA-256 checksums
+
+The large engine binary is not committed to this repository. It is downloaded
+by GitHub Actions from the pinned release during deployment and is cached by
+GitHub Actions for later builds.

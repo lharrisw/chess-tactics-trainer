@@ -10,7 +10,7 @@
 (function (global) {
   'use strict';
 
-  const BUILD_ID = 'play-vs-stockfish-2.1.2';
+  const BUILD_ID = 'play-vs-stockfish-2.1.4';
   const SETTINGS_KEY = 'chess-tactics-play-stockfish-v1';
   const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
@@ -203,6 +203,7 @@
     eng: null,
     gameOver: false,
     thinking: false,
+    animating: false,
     searchToken: 0,
     playerColor: 'w',
     computerColor: 'b',
@@ -221,6 +222,7 @@
     userMoveCount: 0,
     lastMove: null,
     pendingPromotion: null,
+    premove: null,
     suppressClickUntil: 0,
     status: 'Choose your settings and start a game.',
     startedAt: null,
@@ -315,6 +317,14 @@
         filter:drop-shadow(0 2px 2px rgba(0,0,0,.28));}
       #board.ct-drag-enabled .sq.play{cursor:grab;}
       #board.ct-drag-enabled .sq.play:active{cursor:grabbing;}
+      #board .sq.ct-premove-from,
+      #board .sq.ct-premove-to{
+        box-shadow:inset 0 0 0 4px rgba(90,165,255,.88);
+      }
+      #board .sq.ct-premove-to{
+        box-shadow:inset 0 0 0 4px rgba(90,165,255,.96),
+                   inset 0 0 0 8px rgba(20,60,110,.22);
+      }
       @media(max-width:620px){
         #pane-play .play-grid{grid-template-columns:1fr;}
         #pane-play .play-field.wide{grid-column:auto;}
@@ -588,6 +598,14 @@
         renderClocks();
       }
     });
+
+    boardEl.addEventListener('contextmenu', function (event) {
+      if (!P.active || !P.premove) return;
+      event.preventDefault();
+      clearPremove();
+      setStatus('Premove canceled.', 'neutral');
+      renderPlayBoard();
+    });
   }
 
   function syncSetupUi() {
@@ -741,6 +759,8 @@
     P.phase = 'playing';
     P.gameOver = false;
     P.thinking = false;
+    P.animating = false;
+    P.premove = null;
     P.result = '*';
     P.termination = 'Unfinished';
     P.status = '';
@@ -813,6 +833,8 @@
     P.phase = 'setup';
     P.gameOver = false;
     P.thinking = false;
+    P.animating = false;
+    clearPremove();
 
     ui.game.classList.add('hidden');
     ui.setup.classList.remove('hidden');
@@ -997,9 +1019,107 @@
       P.phase === 'playing' &&
       !P.gameOver &&
       !P.thinking &&
+      !P.animating &&
       P.eng &&
       P.eng.turn() === P.playerColor
     );
+  }
+
+  function canQueuePremove() {
+    return (
+      P.active &&
+      P.phase === 'playing' &&
+      !P.gameOver &&
+      !P.animating &&
+      P.eng &&
+      P.eng.turn() === P.computerColor
+    );
+  }
+
+  function premoveEngine() {
+    const parts = P.eng.toFEN().trim().split(/\s+/);
+    parts[1] = P.playerColor;
+    // The current en-passant square belongs to the actual side to move
+    // (Stockfish), so it must not leak into the hypothetical premove board.
+    parts[3] = '-';
+
+    const e = Engine();
+    e.fromFEN(parts.join(' '));
+    return e;
+  }
+
+  function premoveCandidatesFrom(index) {
+    if (!canQueuePremove()) return [];
+
+    try {
+      const e = premoveEngine();
+      const piece = e.get(index);
+      if (!piece || piece.c !== P.playerColor) return [];
+      return e.legal().filter(m => m.from === index);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function premoveLabel(move) {
+    if (!move) return '';
+    return Core.squareName(move.from) + '→' + Core.squareName(move.to) +
+      (move.promo ? '=' + String(move.promo).toUpperCase() : '');
+  }
+
+  function clearPremove() {
+    P.premove = null;
+    S.selected = null;
+    S.targets = [];
+  }
+
+  function queuePremove(move) {
+    if (!move || !canQueuePremove()) return;
+
+    P.premove = {
+      from: move.from,
+      to: move.to,
+      promo: move.promo || null
+    };
+
+    S.selected = null;
+    S.targets = [];
+    hidePromotion();
+    setStatus('Premove queued: ' + premoveLabel(P.premove) + '.', 'neutral');
+    renderPlayBoard();
+  }
+
+  function applyPremoveVisuals() {
+    if (!P.premove || !boardEl) return;
+
+    const from = cellForIndex(P.premove.from);
+    const to = cellForIndex(P.premove.to);
+    if (from) from.classList.add('ct-premove-from');
+    if (to) to.classList.add('ct-premove-to');
+  }
+
+  async function tryExecutePremove() {
+    if (!P.premove || P.gameOver || P.eng.turn() !== P.playerColor) {
+      return 'none';
+    }
+
+    const queued = P.premove;
+    clearPremove();
+
+    const legal = P.eng.legal().find(m =>
+      m.from === queued.from &&
+      m.to === queued.to &&
+      (queued.promo ? m.promo === queued.promo : !m.promo)
+    );
+
+    if (!legal) {
+      renderPlayBoard();
+      return 'cancelled';
+    }
+
+    setStatus('Premove played: ' + premoveLabel(queued) + '.', 'neutral');
+    await commitMove(legal, 'user');
+    return 'played';
   }
 
   function renderPlayBoard() {
@@ -1010,13 +1130,14 @@
     S.selected = S.selected == null ? null : S.selected;
     S.targets = Array.isArray(S.targets) ? S.targets : [];
 
-    const selectable = canHumanMove();
+    const selectable = canHumanMove() || canQueuePremove();
     drawBoard(P.eng, {
       selectable,
       last: P.settings.lastMove ? P.lastMove : null
     });
 
     applyBoardPreferenceClasses();
+    applyPremoveVisuals();
     installDragHandlers(selectable);
     renderControls();
     renderClocks();
@@ -1033,13 +1154,15 @@
       if (piece && piece.c === P.playerColor) {
         cell.draggable = true;
         cell.addEventListener('dragstart', function (event) {
-          if (!canHumanMove()) {
+          if (!canHumanMove() && !canQueuePremove()) {
             event.preventDefault();
             return;
           }
 
           S.selected = index;
-          S.targets = P.eng.legal().filter(m => m.from === index);
+          S.targets = canHumanMove()
+            ? P.eng.legal().filter(m => m.from === index)
+            : premoveCandidatesFrom(index);
           P.suppressClickUntil = Date.now() + 150;
           try { event.dataTransfer.setData('text/plain', String(index)); } catch (_) {}
           renderPlayBoard();
@@ -1060,8 +1183,18 @@
 
   function playSquare(index) {
     if (Date.now() < P.suppressClickUntil) return;
-    if (!canHumanMove()) return;
 
+    if (canHumanMove()) {
+      normalMoveSquare(index);
+      return;
+    }
+
+    if (canQueuePremove()) {
+      premoveSquare(index);
+    }
+  }
+
+  function normalMoveSquare(index) {
     const piece = P.eng.get(index);
 
     if (S.selected !== null) {
@@ -1091,10 +1224,95 @@
     }
   }
 
+  function premoveSquare(index) {
+    const piece = P.eng.get(index);
+
+    // Clicking the queued destination again is an easy mouse/touch cancel.
+    if (S.selected === null && P.premove && index === P.premove.to) {
+      clearPremove();
+      setStatus('Premove canceled.', 'neutral');
+      renderPlayBoard();
+      return;
+    }
+
+    if (S.selected !== null) {
+      const candidates = S.targets.filter(m => m.to === index);
+      if (candidates.length) {
+        choosePremoveCandidate(candidates);
+        return;
+      }
+
+      if (piece && piece.c === P.playerColor) {
+        S.selected = index;
+        S.targets = premoveCandidatesFrom(index);
+        renderPlayBoard();
+        return;
+      }
+
+      S.selected = null;
+      S.targets = [];
+      renderPlayBoard();
+      return;
+    }
+
+    if (piece && piece.c === P.playerColor) {
+      S.selected = index;
+      S.targets = premoveCandidatesFrom(index);
+      renderPlayBoard();
+    }
+  }
+
   function attemptHumanDestination(index) {
-    if (!canHumanMove() || S.selected === null) return;
+    if (S.selected === null) return;
+
     const candidates = S.targets.filter(m => m.to === index);
-    if (candidates.length) chooseMoveCandidate(candidates);
+    if (!candidates.length) return;
+
+    if (canHumanMove()) chooseMoveCandidate(candidates);
+    else if (canQueuePremove()) choosePremoveCandidate(candidates);
+  }
+
+  function choosePremoveCandidate(candidates) {
+    if (!candidates.length) return;
+
+    const promotions = candidates.filter(m => !!m.promo);
+    if (promotions.length <= 1) {
+      queuePremove(candidates[0]);
+      return;
+    }
+
+    if (P.settings.autoQueen) {
+      const queen = promotions.find(m => m.promo === 'q') || promotions[0];
+      queuePremove(queen);
+      return;
+    }
+
+    showPremovePromotion(promotions);
+  }
+
+  function showPremovePromotion(moves) {
+    P.pendingPromotion = moves.slice();
+    ui.promoPieces.innerHTML = '';
+
+    const color = P.playerColor;
+    const order = ['q', 'r', 'b', 'n'];
+
+    for (const type of order) {
+      const move = moves.find(m => m.promo === type);
+      if (!move) continue;
+
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.setAttribute('aria-label', 'Premove promotion to ' + type);
+      button.innerHTML = PIECES[(color === 'w' ? 'w' : 'b') + type.toUpperCase()];
+      button.addEventListener('click', function () {
+        hidePromotion();
+        queuePremove(move);
+      });
+      ui.promoPieces.appendChild(button);
+    }
+
+    ui.promo.classList.remove('hidden');
   }
 
   function chooseMoveCandidate(candidates) {
@@ -1270,22 +1488,36 @@
     P.clockSide = null;
     S.selected = null;
     S.targets = [];
+    P.animating = true;
 
     renderMoveList();
     renderPlayBoard();
 
     await animateTo(visual, move.to);
+    P.animating = false;
 
     playMoveSound(isCapture ? 'capture' : 'move');
 
     const ended = checkAutomaticGameEnd();
     if (ended || P.gameOver) return;
 
+    // If this was Stockfish's move, a queued premove gets first chance at the
+    // new position. A legal premove executes before the player's clock starts;
+    // an illegal one is discarded and the player receives the normal turn.
+    let premoveOutcome = 'none';
+    if (actor === 'computer' && P.eng.turn() === P.playerColor && P.premove) {
+      premoveOutcome = await tryExecutePremove();
+      if (premoveOutcome === 'played' || P.gameOver) return;
+    }
+
     startClock(P.eng.turn());
+    renderPlayBoard();
 
     if (P.eng.turn() === P.computerColor) {
       setStatus('Stockfish is thinking…', 'neutral');
       requestComputerMove();
+    } else if (premoveOutcome === 'cancelled') {
+      setStatus('Premove canceled — it is no longer legal. Your move.', 'neutral');
     } else {
       setStatus(P.eng.inCheck() ? 'Your move — you are in check.' : 'Your move.', 'neutral');
     }
@@ -1459,6 +1691,7 @@
     cancelEngineSearch();
     pauseClock();
     hidePromotion();
+    clearPremove();
 
     let removedUser = false;
 
@@ -1555,6 +1788,8 @@
     pauseClock();
 
     P.gameOver = true;
+    P.animating = false;
+    clearPremove();
     P.result = result;
     P.termination = termination;
     S.solved = true;
@@ -1652,7 +1887,11 @@
     ui.resign.disabled = P.gameOver || P.phase !== 'playing';
     ui.export.disabled = !P.history.length;
 
-    ui.thinking.textContent = P.thinking ? 'Stockfish is thinking…' : '';
+    ui.thinking.textContent = P.thinking
+      ? (P.premove
+          ? 'Stockfish is thinking… · Premove ' + premoveLabel(P.premove)
+          : 'Stockfish is thinking…')
+      : '';
   }
 
   function setStatus(text, kind) {
@@ -1749,6 +1988,7 @@
       active: P.active,
       gameOver: P.gameOver,
       thinking: P.thinking,
+      premove: P.premove ? Object.assign({}, P.premove) : null,
       playerColor: P.playerColor,
       result: P.result,
       termination: P.termination,
@@ -1761,6 +2001,7 @@
 
   global.PlayVsStockfish = {
     build: BUILD_ID,
+    premove: 'single-queued-legal-after-stockfish',
     tabLayoutFix: 'owned-by-app-layout-2.1.2',
     core: Core,
     status: apiStatus,

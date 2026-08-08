@@ -164,7 +164,10 @@ jobs:
           assert "postgame-analysis-2.2" in review
           assert "Retry this position" in review
           assert "Turn into puzzle" in review
-          assert "searchMoves: [position.move.uci]" in review
+          assert "result-position-analysis-2.2.2" in review
+          assert "normal-child-search-with-score-inversion" in review
+          assert "searchMoves: [position.move.uci]" not in review
+          assert "searchMoves: [uci]" not in review
           assert "canQueuePremove" in play
           assert "tryExecutePremove" in play
           assert "single-queued-legal-after-stockfish" in play

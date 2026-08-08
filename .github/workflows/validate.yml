@@ -202,7 +202,10 @@ jobs:
           required_review = [
               "postgame-analysis-2.2",
               "Full-strength Stockfish 18",
-              "searchMoves: [position.move.uci]",
+              "result-position-analysis-2.2.2",
+              "Core.invertScore",
+              "evaluating resulting position",
+              "normal-child-search-with-score-inversion",
               "estimated win-chance loss",
               "Missed mate",
               "Missed win",
@@ -225,6 +228,9 @@ jobs:
 
           for marker in required_review:
               assert marker in review, marker
+
+          assert "searchMoves: [position.move.uci]" not in review
+          assert "searchMoves: [uci]" not in review
 
           for marker in required_apply:
               assert marker in apply_review, marker

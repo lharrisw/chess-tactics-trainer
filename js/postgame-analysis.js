@@ -4,8 +4,9 @@
  * Stockfish determines objective chess facts. This module:
  *   - analyzes completed games only;
  *   - temporarily uses full engine strength for review;
- *   - compares the played move against the engine's best move at the SAME
- *     root position (using UCI searchmoves for the played move);
+ *   - compares the played move against the engine's best move by analyzing
+ *     the normal resulting position and converting that score back to the
+ *     original mover's perspective;
  *   - labels moves from estimated win-chance loss with published thresholds;
  *   - never calls an LLM or external chess-analysis service.
  */
@@ -13,7 +14,7 @@
   'use strict';
 
   const BUILD_ID = 'postgame-analysis-2.2';
-  const ANALYSIS_HOTFIX_ID = 'bounded-analysis-2.2.1';
+  const ANALYSIS_HOTFIX_ID = 'result-position-analysis-2.2.2';
   const PERSONAL_THEME = 'Personal mistake';
 
   // Browser Stockfish is intentionally given a wall-clock budget rather than
@@ -47,6 +48,18 @@
         return 0;
       }
       return null;
+    },
+
+    invertScore(score) {
+      if (!score || (score.type !== 'cp' && score.type !== 'mate')) return null;
+
+      return {
+        type: score.type,
+        value: -(Number(score.value) || 0),
+        // Bounds reverse when the point of view reverses.
+        lowerbound: !!score.upperbound,
+        upperbound: !!score.lowerbound
+      };
     },
 
     winChance(cp) {
@@ -427,8 +440,9 @@
       </div>
 
       <div class="note" id="analysis-method">
-        Labels are trainer-defined, not Chess.com labels. They compare the played move
-        with full Stockfish at the same root position using bounded browser analysis.
+        Labels are trainer-defined, not Chess.com labels. Stockfish finds the best
+        move from the original position; alternatives are scored by analyzing the
+        resulting position and reversing that score to the original mover’s perspective.
         Estimated win-chance loss:
         under 5 points = Good, 5–12 = Inaccuracy, 12–25 = Mistake, 25+ = Blunder.
         Forced-mate and clearly-winning-position losses can be labeled Missed mate or
@@ -665,6 +679,27 @@
     return san;
   }
 
+  function positionAfterUci(fen, uci) {
+    const engine = Engine();
+    engine.fromFEN(fen);
+
+    const move = engine.findLegalUci(String(uci || ''));
+    if (!move) {
+      throw new Error('Could not reconstruct played move ' + String(uci || '—') + '.');
+    }
+
+    engine.make(move);
+    return engine.toFEN();
+  }
+
+  function moverPerspectiveLine(childLine) {
+    if (!childLine) return null;
+
+    return Object.assign({}, childLine, {
+      score: Core.invertScore(childLine.score)
+    });
+  }
+
   function uciToSan(fen, uci) {
     if (!uci) return '—';
 
@@ -869,6 +904,8 @@
         const bestMove = best.bestmove || (bestLine && bestLine.pv[0]) || null;
 
         let playedLine = null;
+        let playedChildFen = null;
+        let playedChildLine = null;
 
         if (bestMove === position.move.uci) {
           playedLine = bestLine;
@@ -884,32 +921,38 @@
             'neutral'
           );
         } else {
+          playedChildFen = positionAfterUci(position.fen, position.move.uci);
+
           setAnalysisStatus(
             'Move ' + moveIndex + '/' + targets.length +
-            ' · checking played move ' + position.move.san +
+            ' · evaluating resulting position after ' + position.move.san +
             ' · ' + profile.name +
             ' (' + (profile.movetime / 1000).toFixed(1) + 's budget)…',
             'neutral'
           );
 
           const played = await analyzeBounded(
-            position.fen,
+            playedChildFen,
             {
-              multiPv: 1,
-              searchMoves: [position.move.uci]
+              multiPv: 1
             },
             {
               token,
               profile,
-              stage: 'checking played move',
+              stage: 'evaluating resulting position',
               moveLabel: label,
               moveIndex,
               moveTotal: targets.length
             }
           );
 
-          playedLine =
+          playedChildLine =
             played.lines && played.lines[0] ? played.lines[0] : null;
+
+          // Stockfish's child-position score is from the opponent's point of
+          // view (the child side to move). Reverse it so bestScore and
+          // playedScore are both from the ORIGINAL mover's perspective.
+          playedLine = moverPerspectiveLine(playedChildLine);
 
           completedUnits += 1;
           setReviewProgress(completedUnits, totalUnits);
@@ -950,15 +993,32 @@
           playedScore: scoreFromLine(playedLine),
           bestPvUci: bestLine && bestLine.pv ? bestLine.pv.slice(0, 10) : [],
           playedPvUci:
-            playedLine && playedLine.pv ? playedLine.pv.slice(0, 10) : [],
+            bestMove === position.move.uci
+              ? (playedLine && playedLine.pv ? playedLine.pv.slice(0, 10) : [])
+              : [position.move.uci].concat(
+                  playedChildLine && playedChildLine.pv
+                    ? playedChildLine.pv.slice(0, 9)
+                    : []
+                ),
           bestPvSan:
             bestLine && bestLine.pv
               ? pvToSan(position.fen, bestLine.pv, 8)
               : '—',
           playedPvSan:
-            playedLine && playedLine.pv
-              ? pvToSan(position.fen, playedLine.pv, 8)
-              : '—',
+            bestMove === position.move.uci
+              ? (
+                  playedLine && playedLine.pv
+                    ? pvToSan(position.fen, playedLine.pv, 8)
+                    : '—'
+                )
+              : (
+                  position.move.san +
+                  (
+                    playedChildLine && playedChildLine.pv && playedChildFen
+                      ? ' ' + pvToSan(playedChildFen, playedChildLine.pv, 7)
+                      : ''
+                  )
+                ),
           bestSecondGapCp: gapCp,
           onlyMoveLike,
           classification,
@@ -1364,21 +1424,22 @@
       const searched =
         uci === result.bestMove
           ? null
-          : await global.ChessEngine.analyzeFen(result.fen, {
+          : await global.ChessEngine.analyzeFen(retry.engine.toFEN(), {
               movetime: analysisProfile().movetime,
-              multiPv: 1,
-              searchMoves: [uci]
+              multiPv: 1
             });
 
       const playedScore =
         uci === result.bestMove
           ? result.bestScore
-          : (
-              searched &&
-              searched.lines &&
-              searched.lines[0] &&
-              searched.lines[0].score
-            ) || null;
+          : Core.invertScore(
+              (
+                searched &&
+                searched.lines &&
+                searched.lines[0] &&
+                searched.lines[0].score
+              ) || null
+            );
 
       const judged = Core.classify({
         bestScore: result.bestScore,
@@ -1594,8 +1655,9 @@
   global.PostGameAnalysis = {
     build: BUILD_ID,
     hotfix: ANALYSIS_HOTFIX_ID,
-    method: 'full-stockfish-root-comparison-v1',
+    method: 'best-root-plus-result-position-v2',
     scheduler: 'bounded-movetime-with-watchdog',
+    playedMoveEvaluation: 'normal-child-search-with-score-inversion',
     labels: 'estimated-win-chance-loss',
     open: openAnalysis,
     close: function () { closeAnalysis(true); },

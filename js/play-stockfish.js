@@ -10,7 +10,7 @@
 (function (global) {
   'use strict';
 
-  const BUILD_ID = 'play-vs-stockfish-2.1';
+  const BUILD_ID = 'play-vs-stockfish-2.1.2';
   const SETTINGS_KEY = 'chess-tactics-play-stockfish-v1';
   const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
@@ -240,8 +240,6 @@
     const style = document.createElement('style');
     style.id = 'ct-play-2-1-style';
     style.textContent = `
-      .tabs{overflow-x:auto;}
-      .tabs .tab{min-width:70px;white-space:nowrap;}
       #pane-play .play-grid{
         display:grid;grid-template-columns:1fr 1fr;gap:8px;
       }
@@ -1763,6 +1761,7 @@
 
   global.PlayVsStockfish = {
     build: BUILD_ID,
+    tabLayoutFix: 'owned-by-app-layout-2.1.2',
     core: Core,
     status: apiStatus,
     start: function () { return startGame(false); },

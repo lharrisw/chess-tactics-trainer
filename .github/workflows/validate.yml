@@ -19,14 +19,14 @@ jobs:
           python -m py_compile scripts/build_pages.py
           python -m py_compile scripts/apply_correctness_foundation.py
 
-      - name: Check correctness addon syntax and Build 1.2 UX markers
+      - name: Check correctness addon syntax and Build 1.2.1 UX markers
         run: |
           node --check js/correctness-foundation.js
           python - <<'PY'
           from pathlib import Path
           addon = Path("js/correctness-foundation.js").read_text()
           required = [
-              "correctness-foundation-1.2",
+              "correctness-foundation-1.2.1",
               "introFen",
               "introMove",
               "Watch the opponent's move.",
@@ -39,10 +39,14 @@ jobs:
               "Hint 1/2",
               "Hint 2/2",
               "progressiveHintsPerMove",
+              "originalHintClickHandler",
+              "removeEventListener('click', originalHintClickHandler)",
+              "addEventListener('click', doHint)",
+              "progressiveHintHandlersRebound",
           ]
           for marker in required:
               assert marker in addon, marker
-          print("Build 1.2 replay, progressive hints, opponent preview, and persistent retry UX are present.")
+          print("Build 1.2.1 replacement hint/solution handlers, replay, and retry UX are present.")
           PY
 
       - name: Build existing sample puzzle site

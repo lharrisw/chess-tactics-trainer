@@ -1,4 +1,4 @@
-/* Chess Tactics Trainer — Build 1.2.1 progressive-hint binding fix + replay + correctness foundation
+/* Chess Tactics Trainer — Build 1.2.2 initial-replay timing fix + progressive hints + correctness foundation
  *
  * Loaded after the existing application by scripts/apply_correctness_foundation.py.
  * It deliberately does not replace the current board, database, or million-puzzle
@@ -9,7 +9,7 @@
 (function () {
   'use strict';
 
-  const BUILD_ID = 'correctness-foundation-1.2.1';
+  const BUILD_ID = 'correctness-foundation-1.2.2';
 
   function mateTargetForPuzzle(p) {
     if (!p) return null;
@@ -594,6 +594,12 @@
         S.busy = false;
         resetHintState();
 
+        // appendRevealedMove() ran while the intro animation was still busy,
+        // so updateReplayButtons() correctly disabled Back at that moment.
+        // Refresh once the intro has finished so the pre-move position is
+        // immediately reviewable before the solver makes any move.
+        updateReplayButtons();
+
         if (S.solEl) S.solEl.disabled = false;
 
         // Keep the opponent's move highlighted until the solver interacts
@@ -951,7 +957,8 @@
       explicitTryAgainButton: true,
       revealedOnlyMoveReplay: true,
       progressiveHintsPerMove: true,
-      progressiveHintHandlersRebound: true
+      progressiveHintHandlersRebound: true,
+      initialSetupReplayImmediatelyAvailable: true
     }
   };
 

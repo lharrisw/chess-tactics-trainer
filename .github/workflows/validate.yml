@@ -22,6 +22,7 @@ jobs:
           python -m py_compile scripts/fetch_stockfish.py
           python -m py_compile scripts/apply_stockfish_engine.py
           python -m py_compile scripts/apply_play_stockfish.py
+          python -m py_compile scripts/apply_postgame_analysis.py
 
       - name: Check Build 1.2.2 correctness and puzzle UX
         run: |
@@ -148,6 +149,8 @@ jobs:
               "Premove queued:",
               "tryExecutePremove",
               "single-queued-legal-after-stockfish",
+              "analysisSnapshot: 'read-only-completed-game-v1'",
+              "snapshot: gameSnapshot",
               "ct-premove-from",
               "ct-premove-to",
               "Premove canceled — it is no longer legal",
@@ -183,6 +186,50 @@ jobs:
               assert marker in apply_play, marker
 
           print("Build 2.1.4 Play premove + responsive layout regression gate passed.")
+          PY
+
+      - name: Check Build 2.2 post-game analysis source
+        run: |
+          node --check js/postgame-analysis.js
+          node tests/test-postgame-analysis.js
+
+          python - <<'PY'
+          from pathlib import Path
+
+          review = Path("js/postgame-analysis.js").read_text()
+          apply_review = Path("scripts/apply_postgame_analysis.py").read_text()
+
+          required_review = [
+              "postgame-analysis-2.2",
+              "Full-strength Stockfish 18",
+              "searchMoves: [position.move.uci]",
+              "estimated win-chance loss",
+              "Missed mate",
+              "Missed win",
+              "Blunder",
+              "bestSecondGapCp",
+              "Retry this position",
+              "Turn into puzzle",
+              "Personal mistake notebook",
+              "writePuzzleBatch",
+              "refreshDBStats",
+              "global.ChessEngine.setStrength({ mode: 'full' })",
+          ]
+
+          required_apply = [
+              'SCRIPT_TAG = \\'<script src="js/postgame-analysis.js"></script>\\'',
+              "js/stockfish-engine-layer.js",
+              "js/play-stockfish.js",
+              "js/app-layout.js",
+          ]
+
+          for marker in required_review:
+              assert marker in review, marker
+
+          for marker in required_apply:
+              assert marker in apply_review, marker
+
+          print("Build 2.2 post-game analysis regression gate passed.")
           PY
 
       - name: Build existing sample puzzle site
@@ -226,6 +273,7 @@ jobs:
             --engine-dir _engine-test
 
           python scripts/apply_play_stockfish.py --site-dir _site-test
+          python scripts/apply_postgame_analysis.py --site-dir _site-test
 
       - name: Validate manifests and generated static integration
         run: |
@@ -265,11 +313,14 @@ jobs:
           assert (site / "js/stockfish-controller.js").is_file()
           assert (site / "js/stockfish-engine-layer.js").is_file()
           assert (site / "js/play-stockfish.js").is_file()
+          assert (site / "js/postgame-analysis.js").is_file()
           assert (site / "js/app-layout.js").is_file()
           assert 'js/play-stockfish.js' in html
+          assert 'js/postgame-analysis.js' in html
           assert 'js/app-layout.js' in html
           assert html.index('js/stockfish-engine-layer.js') < html.index('js/play-stockfish.js')
           assert html.index('js/play-stockfish.js') < html.index('js/app-layout.js')
+          assert html.index('js/app-layout.js') < html.index('js/postgame-analysis.js')
           assert (site / "engine/stockfish-18-single.js").is_file()
           assert (site / "engine/stockfish-18-single.wasm").is_file()
           assert (site / "engine/Copying.txt").is_file()
@@ -292,7 +343,7 @@ jobs:
           script = re.search(r"<script>(.*)</script>", source_html, re.S).group(1)
           Path("app-check.js").write_text(script)
 
-          print("Generated Build 1.2.2 + Build 2.0 + Build 2.1 integration passed.")
+          print("Generated Build 1.2.2 + Build 2.0 + Build 2.1 + Build 2.2 integration passed.")
           PY
 
           node --check app-check.js

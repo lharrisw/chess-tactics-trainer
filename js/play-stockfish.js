@@ -1981,6 +1981,38 @@
     } catch (_) {}
   }
 
+  function gameSnapshot() {
+    if (!P.eng) return null;
+
+    return {
+      schema: 1,
+      gameOver: !!P.gameOver,
+      phase: P.phase,
+      result: P.result,
+      termination: P.termination,
+      playerColor: P.playerColor,
+      computerColor: P.computerColor,
+      startedAt: P.startedAt ? new Date(P.startedAt).toISOString() : null,
+      finalFen: positionFen(),
+      pgn: P.history.length ? pgnText() : '',
+      settings: Object.assign({}, P.settings),
+      timeControl: Object.assign({}, P.timeControl),
+      moves: P.history.map(function (entry, index) {
+        return {
+          ply: index,
+          actor: entry.actor,
+          color: entry.color,
+          san: entry.san,
+          uci: entry.uci,
+          clocksBefore: {
+            w: Number(entry.clocksBefore.w),
+            b: Number(entry.clocksBefore.b)
+          }
+        };
+      })
+    };
+  }
+
   function apiStatus() {
     return {
       build: BUILD_ID,
@@ -2003,8 +2035,10 @@
     build: BUILD_ID,
     premove: 'single-queued-legal-after-stockfish',
     tabLayoutFix: 'owned-by-app-layout-2.1.2',
+    analysisSnapshot: 'read-only-completed-game-v1',
     core: Core,
     status: apiStatus,
+    snapshot: gameSnapshot,
     start: function () { return startGame(false); },
     stop: returnToSettings,
     exportPgn: pgnText

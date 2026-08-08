@@ -21,6 +21,7 @@ jobs:
           python -m py_compile scripts/apply_correctness_foundation.py
           python -m py_compile scripts/fetch_stockfish.py
           python -m py_compile scripts/apply_stockfish_engine.py
+          python -m py_compile scripts/apply_play_stockfish.py
 
       - name: Check Build 1.2.2 correctness and puzzle UX
         run: |
@@ -111,6 +112,53 @@ jobs:
           print("Build 2.0 Stockfish source regression gate passed.")
           PY
 
+      - name: Check Build 2.1 Play source
+        run: |
+          node --check js/play-stockfish.js
+          node tests/test-play-stockfish.js
+
+          python - <<'PY'
+          from pathlib import Path
+
+          play = Path("js/play-stockfish.js").read_text()
+          apply_play = Path("scripts/apply_play_stockfish.py").read_text()
+
+          required_play = [
+              "play-vs-stockfish-2.1",
+              "Play Stockfish 18",
+              "Training",
+              "Tournament",
+              "1+0",
+              "3+2",
+              "10+5",
+              "30+20",
+              "Offer draw",
+              "Take back",
+              "Export PGN",
+              "Auto-queen",
+              "Drag pieces",
+              "Piece animation",
+              "Threefold repetition",
+              "50-move rule",
+              "Insufficient material",
+              "global.ChessEngine.analyzeFen",
+          ]
+
+          required_apply = [
+              'SCRIPT_TAG = \'<script src="js/play-stockfish.js"></script>\'',
+              "stockfish-engine-layer.js",
+              "play-stockfish.js",
+          ]
+
+          for marker in required_play:
+              assert marker in play, marker
+
+          for marker in required_apply:
+              assert marker in apply_play, marker
+
+          print("Build 2.1 Play-vs-Stockfish source regression gate passed.")
+          PY
+
       - name: Build existing sample puzzle site
         run: |
           python scripts/build_pages.py \
@@ -151,6 +199,8 @@ jobs:
             --site-dir _site-test \
             --engine-dir _engine-test
 
+          python scripts/apply_play_stockfish.py --site-dir _site-test
+
       - name: Validate manifests and generated static integration
         run: |
           python - <<'PY'
@@ -188,6 +238,9 @@ jobs:
           assert html.index('js/stockfish-controller.js') < html.index('js/stockfish-engine-layer.js')
           assert (site / "js/stockfish-controller.js").is_file()
           assert (site / "js/stockfish-engine-layer.js").is_file()
+          assert (site / "js/play-stockfish.js").is_file()
+          assert 'js/play-stockfish.js' in html
+          assert html.index('js/stockfish-engine-layer.js') < html.index('js/play-stockfish.js')
           assert (site / "engine/stockfish-18-single.js").is_file()
           assert (site / "engine/stockfish-18-single.wasm").is_file()
           assert (site / "engine/Copying.txt").is_file()
@@ -210,7 +263,7 @@ jobs:
           script = re.search(r"<script>(.*)</script>", source_html, re.S).group(1)
           Path("app-check.js").write_text(script)
 
-          print("Generated Build 1.2.2 + Build 2.0 integration passed.")
+          print("Generated Build 1.2.2 + Build 2.0 + Build 2.1 integration passed.")
           PY
 
           node --check app-check.js

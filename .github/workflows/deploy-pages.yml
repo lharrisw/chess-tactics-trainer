@@ -82,6 +82,9 @@ jobs:
             --site-dir _site \
             --engine-dir _engine
 
+      - name: Apply Play vs Stockfish
+        run: python scripts/apply_play_stockfish.py --site-dir _site
+
       - name: Verify generated site
         run: |
           python - <<'PY'
@@ -102,6 +105,7 @@ jobs:
               "correctness": site / "js/correctness-foundation.js",
               "controller": site / "js/stockfish-controller.js",
               "engine_layer": site / "js/stockfish-engine-layer.js",
+              "play_layer": site / "js/play-stockfish.js",
               "engine_js": site / "engine/stockfish-18-single.js",
               "engine_wasm": site / "engine/stockfish-18-single.wasm",
               "license": site / "engine/Copying.txt",
@@ -123,7 +127,9 @@ jobs:
           assert 'js/correctness-foundation.js' in html
           assert 'js/stockfish-controller.js' in html
           assert 'js/stockfish-engine-layer.js' in html
+          assert 'js/play-stockfish.js' in html
           assert html.index('js/stockfish-controller.js') < html.index('js/stockfish-engine-layer.js')
+          assert html.index('js/stockfish-engine-layer.js') < html.index('js/play-stockfish.js')
           assert 'objective-aware answers' in html
           assert 'Mate-in-one records are excluded' not in html
 
@@ -137,6 +143,13 @@ jobs:
           assert "new StockfishController" in layer
           assert "The engine binary stays lazy" in layer
 
+          play = required["play_layer"].read_text()
+          assert "play-vs-stockfish-2.1" in play
+          assert "Play Stockfish 18" in play
+          assert "Training" in play and "Tournament" in play
+          assert "Offer draw" in play
+          assert "Export PGN" in play
+
           release = json.loads(required["release_record"].read_text())
           assert release["tag"] == "v18.0.0"
           assert release["upstreamOfficialStockfishCommit"] == "cb3d4ee"
@@ -148,7 +161,7 @@ jobs:
 
           print(
               f"Verified {manifest['count']:,} puzzles, Build 1.2.2 correctness, "
-              f"and pinned Stockfish 18 Build 2.0."
+              f"pinned Stockfish 18 Build 2.0, and Play Build 2.1."
           )
           PY
 

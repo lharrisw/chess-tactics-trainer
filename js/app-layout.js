@@ -149,6 +149,7 @@
 
     #pane-play .play-options{
       gap:10px !important;
+      margin-top:8px !important;
     }
 
     #pane-play .play-check{
@@ -167,6 +168,96 @@
     .play-clock{
       padding:10px 13px !important;
       min-height:48px !important;
+    }
+
+    /*
+     * POST-GAME STATE
+     * Once Rematch/New settings are visible, stop using the active-game
+     * control density. Give the result, moves, and meaningful next actions
+     * their own relaxed layout.
+     */
+    #play-game:has(#play-after-buttons:not(.hidden)){
+      display:flex;
+      flex-direction:column;
+      gap:14px;
+    }
+
+    #play-game:has(#play-after-buttons:not(.hidden)) .play-summary{
+      padding:16px 18px !important;
+      margin-bottom:0 !important;
+    }
+
+    #play-game:has(#play-after-buttons:not(.hidden)) #play-status{
+      padding:13px 16px !important;
+      margin:0 !important;
+      font-size:.9rem !important;
+      font-weight:800;
+      line-height:1.45;
+      border-radius:9px;
+    }
+
+    #play-game:has(#play-after-buttons:not(.hidden)) #play-thinking{
+      display:none !important;
+    }
+
+    #play-game:has(#play-after-buttons:not(.hidden)) #play-moves{
+      max-height:340px !important;
+      min-height:230px;
+      padding:14px 16px !important;
+      margin:0 !important;
+      font-size:.86rem;
+      line-height:1.8 !important;
+      border-radius:9px;
+      overflow-y:auto;
+    }
+
+    #play-game:has(#play-after-buttons:not(.hidden)) #play-moves .move-pair{
+      grid-template-columns:40px minmax(0,1fr) minmax(0,1fr) !important;
+      gap:10px !important;
+      padding:2px 0;
+    }
+
+    /*
+     * Draw offer and resign have no purpose after the game is over.
+     * Removing them makes room for the actions that still matter.
+     */
+    #play-game:has(#play-after-buttons:not(.hidden)) #play-draw,
+    #play-game:has(#play-after-buttons:not(.hidden)) #play-resign{
+      display:none !important;
+    }
+
+    /*
+     * First post-game action group:
+     *   Take back | Flip board
+     *   Export PGN (full width)
+     */
+    #play-game:has(#play-after-buttons:not(.hidden)) > .btns:not(#play-after-buttons){
+      display:grid !important;
+      grid-template-columns:1fr 1fr !important;
+      gap:10px !important;
+      margin:0 !important;
+    }
+
+    #play-game:has(#play-after-buttons:not(.hidden)) #play-export{
+      grid-column:1 / -1 !important;
+      min-height:46px;
+    }
+
+    /*
+     * Primary next-step actions get full-width rows. Rematch remains the
+     * visual primary action; New settings is deliberately separate below it.
+     */
+    #play-game:has(#play-after-buttons:not(.hidden)) #play-after-buttons{
+      display:grid !important;
+      grid-template-columns:1fr !important;
+      gap:10px !important;
+      margin:0 !important;
+    }
+
+    #play-game:has(#play-after-buttons:not(.hidden)) #play-rematch,
+    #play-game:has(#play-after-buttons:not(.hidden)) #play-new-settings{
+      width:100%;
+      min-height:48px;
     }
 
     /*
@@ -265,7 +356,9 @@
     panelDesktopPx: 460,
     panelStackedMaxPx: 560,
     mobileSingleColumn: true,
-    naturalWidthScrollableTabs: true
+    naturalWidthScrollableTabs: true,
+    animationOptionsSpacingHotfix: true,
+    postGameComfortLayout: true
   };
 
   console.info('[Tactics Trainer] Loaded ' + BUILD_ID);

@@ -147,11 +147,14 @@ jobs:
           assert "The engine binary stays lazy" in layer
 
           play = required["play_layer"].read_text()
-          assert "play-vs-stockfish-2.1.2" in play
+          assert "play-vs-stockfish-2.1.4" in play
           assert "Play Stockfish 18" in play
           assert "Training" in play and "Tournament" in play
           assert "Offer draw" in play
           assert "Export PGN" in play
+          assert "canQueuePremove" in play
+          assert "tryExecutePremove" in play
+          assert "single-queued-legal-after-stockfish" in play
 
           layout = required["layout_layer"].read_text()
           assert "comfortable-layout-2.1.2" in layout

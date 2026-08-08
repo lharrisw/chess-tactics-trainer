@@ -112,7 +112,7 @@ jobs:
           print("Build 2.0 Stockfish source regression gate passed.")
           PY
 
-      - name: Check Build 2.1.2 Play + comfortable layout source
+      - name: Check Build 2.1.4 Play + premove source
         run: |
           node --check js/play-stockfish.js
           node --check js/app-layout.js
@@ -126,7 +126,7 @@ jobs:
           apply_play = Path("scripts/apply_play_stockfish.py").read_text()
 
           required_play = [
-              "play-vs-stockfish-2.1.2",
+              "play-vs-stockfish-2.1.4",
               "Play Stockfish 18",
               "Training",
               "Tournament",
@@ -144,6 +144,13 @@ jobs:
               "50-move rule",
               "Insufficient material",
               "global.ChessEngine.analyzeFen",
+              "canQueuePremove",
+              "Premove queued:",
+              "tryExecutePremove",
+              "single-queued-legal-after-stockfish",
+              "ct-premove-from",
+              "ct-premove-to",
+              "Premove canceled — it is no longer legal",
           ]
 
           required_apply = [
@@ -175,7 +182,7 @@ jobs:
           for marker in required_apply:
               assert marker in apply_play, marker
 
-          print("Build 2.1.2 Play + comfortable responsive layout regression gate passed.")
+          print("Build 2.1.4 Play premove + responsive layout regression gate passed.")
           PY
 
       - name: Build existing sample puzzle site

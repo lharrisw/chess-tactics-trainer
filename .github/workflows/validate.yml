@@ -112,19 +112,21 @@ jobs:
           print("Build 2.0 Stockfish source regression gate passed.")
           PY
 
-      - name: Check Build 2.1 Play source
+      - name: Check Build 2.1.2 Play + comfortable layout source
         run: |
           node --check js/play-stockfish.js
+          node --check js/app-layout.js
           node tests/test-play-stockfish.js
 
           python - <<'PY'
           from pathlib import Path
 
           play = Path("js/play-stockfish.js").read_text()
+          layout = Path("js/app-layout.js").read_text()
           apply_play = Path("scripts/apply_play_stockfish.py").read_text()
 
           required_play = [
-              "play-vs-stockfish-2.1",
+              "play-vs-stockfish-2.1.2",
               "Play Stockfish 18",
               "Training",
               "Tournament",
@@ -145,18 +147,35 @@ jobs:
           ]
 
           required_apply = [
-              'SCRIPT_TAG = \'<script src="js/play-stockfish.js"></script>\'',
+              "SCRIPT_TAGS",
               "stockfish-engine-layer.js",
               "play-stockfish.js",
+              "app-layout.js",
+          ]
+
+          required_layout = [
+              "comfortable-layout-2.1.2",
+              "max-width:1180px",
+              "460px",
+              "560px",
+              "flex-wrap:nowrap",
+              "min-width:max-content",
+              "@media (max-width:1080px)",
+              "@media (max-width:620px)",
+              "grid-template-columns:1fr !important",
+              "mobileSingleColumn: true",
           ]
 
           for marker in required_play:
               assert marker in play, marker
 
+          for marker in required_layout:
+              assert marker in layout, marker
+
           for marker in required_apply:
               assert marker in apply_play, marker
 
-          print("Build 2.1 Play-vs-Stockfish source regression gate passed.")
+          print("Build 2.1.2 Play + comfortable responsive layout regression gate passed.")
           PY
 
       - name: Build existing sample puzzle site
@@ -239,8 +258,11 @@ jobs:
           assert (site / "js/stockfish-controller.js").is_file()
           assert (site / "js/stockfish-engine-layer.js").is_file()
           assert (site / "js/play-stockfish.js").is_file()
+          assert (site / "js/app-layout.js").is_file()
           assert 'js/play-stockfish.js' in html
+          assert 'js/app-layout.js' in html
           assert html.index('js/stockfish-engine-layer.js') < html.index('js/play-stockfish.js')
+          assert html.index('js/play-stockfish.js') < html.index('js/app-layout.js')
           assert (site / "engine/stockfish-18-single.js").is_file()
           assert (site / "engine/stockfish-18-single.wasm").is_file()
           assert (site / "engine/Copying.txt").is_file()

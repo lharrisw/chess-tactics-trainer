@@ -106,6 +106,7 @@ jobs:
               "controller": site / "js/stockfish-controller.js",
               "engine_layer": site / "js/stockfish-engine-layer.js",
               "play_layer": site / "js/play-stockfish.js",
+              "layout_layer": site / "js/app-layout.js",
               "engine_js": site / "engine/stockfish-18-single.js",
               "engine_wasm": site / "engine/stockfish-18-single.wasm",
               "license": site / "engine/Copying.txt",
@@ -128,8 +129,10 @@ jobs:
           assert 'js/stockfish-controller.js' in html
           assert 'js/stockfish-engine-layer.js' in html
           assert 'js/play-stockfish.js' in html
+          assert 'js/app-layout.js' in html
           assert html.index('js/stockfish-controller.js') < html.index('js/stockfish-engine-layer.js')
           assert html.index('js/stockfish-engine-layer.js') < html.index('js/play-stockfish.js')
+          assert html.index('js/play-stockfish.js') < html.index('js/app-layout.js')
           assert 'objective-aware answers' in html
           assert 'Mate-in-one records are excluded' not in html
 
@@ -144,11 +147,17 @@ jobs:
           assert "The engine binary stays lazy" in layer
 
           play = required["play_layer"].read_text()
-          assert "play-vs-stockfish-2.1" in play
+          assert "play-vs-stockfish-2.1.2" in play
           assert "Play Stockfish 18" in play
           assert "Training" in play and "Tournament" in play
           assert "Offer draw" in play
           assert "Export PGN" in play
+
+          layout = required["layout_layer"].read_text()
+          assert "comfortable-layout-2.1.2" in layout
+          assert "max-width:1180px" in layout
+          assert "460px" in layout
+          assert "mobileSingleColumn: true" in layout
 
           release = json.loads(required["release_record"].read_text())
           assert release["tag"] == "v18.0.0"

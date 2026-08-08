@@ -1,4 +1,4 @@
-/* Chess Tactics Trainer — Build 1.2 replay + progressive hints + correctness foundation
+/* Chess Tactics Trainer — Build 1.2.1 progressive-hint binding fix + replay + correctness foundation
  *
  * Loaded after the existing application by scripts/apply_correctness_foundation.py.
  * It deliberately does not replace the current board, database, or million-puzzle
@@ -9,7 +9,7 @@
 (function () {
   'use strict';
 
-  const BUILD_ID = 'correctness-foundation-1.2';
+  const BUILD_ID = 'correctness-foundation-1.2.1';
 
   function mateTargetForPuzzle(p) {
     if (!p) return null;
@@ -207,6 +207,12 @@
   let introTimer = null;
   let tryAgainWrap = null;
   let pendingWrong = null;
+
+  // index.html registers these handlers before this add-on is loaded.
+  // Keep the exact original function objects so we can remove those listeners
+  // after installing the Build 1.2.1 replacements.
+  const originalHintClickHandler = doHint;
+  const originalSolutionClickHandler = doSolution;
 
   // Build 1.2: a revealed-only move timeline. It NEVER contains future
   // solution moves. Back/Forward can therefore never leak the hidden answer.
@@ -907,6 +913,33 @@
     setFb(S.fbEl, 'Solution:', 'neutral');
   };
 
+
+  function installReplacementButtonHandlers() {
+    const hintButtons = [
+      document.getElementById('l-hint'),
+      document.getElementById('gs-hint')
+    ].filter(Boolean);
+
+    const solutionButtons = [
+      document.getElementById('l-sol'),
+      document.getElementById('gs-sol')
+    ].filter(Boolean);
+
+    for (const button of hintButtons) {
+      button.removeEventListener('click', originalHintClickHandler);
+      button.addEventListener('click', doHint);
+      button.dataset.ctHintHandler = BUILD_ID;
+    }
+
+    for (const button of solutionButtons) {
+      button.removeEventListener('click', originalSolutionClickHandler);
+      button.addEventListener('click', doSolution);
+      button.dataset.ctSolutionHandler = BUILD_ID;
+    }
+  }
+
+  installReplacementButtonHandlers();
+
   window.TacticsCorrectness = {
     build: BUILD_ID,
     mateTargetForPuzzle,
@@ -917,7 +950,8 @@
       persistentWrongMoveFeedback: true,
       explicitTryAgainButton: true,
       revealedOnlyMoveReplay: true,
-      progressiveHintsPerMove: true
+      progressiveHintsPerMove: true,
+      progressiveHintHandlersRebound: true
     }
   };
 

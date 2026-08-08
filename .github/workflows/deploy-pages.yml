@@ -1,4 +1,5 @@
 name: Build and deploy million-puzzle trainer
+
 on:
   workflow_dispatch:
     inputs:
@@ -28,10 +29,14 @@ concurrency:
   group: github-pages
   cancel-in-progress: false
 
+env:
+  STOCKFISH_TAG: v18.0.0
+
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 180
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -44,6 +49,17 @@ jobs:
 
       - name: Install build dependency
         run: python -m pip install -r requirements.txt
+
+      - name: Cache pinned Stockfish 18 browser engine
+        uses: actions/cache@v4
+        with:
+          path: _engine
+          key: stockfish-js-${{ env.STOCKFISH_TAG }}-full-single-v2
+
+      - name: Fetch pinned Stockfish 18 engine, license, and source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/fetch_stockfish.py --output _engine
 
       - name: Build one-million-puzzle site
         run: |
@@ -60,6 +76,12 @@ jobs:
       - name: Apply objective-aware correctness layer
         run: python scripts/apply_correctness_foundation.py --site-dir _site
 
+      - name: Apply Stockfish 18 engine layer
+        run: |
+          python scripts/apply_stockfish_engine.py \
+            --site-dir _site \
+            --engine-dir _engine
+
       - name: Verify generated site
         run: |
           python - <<'PY'
@@ -75,21 +97,63 @@ jobs:
           assert manifest["quality"]["mateInOneExcluded"] is False
           assert manifest["quality"]["uniqueFirstMove"] is False
 
-          assert (site / "index.html").is_file()
-          assert (site / "js/correctness-foundation.js").is_file()
-          assert all((site / "puzzles" / chunk["file"]).is_file() for chunk in manifest["chunks"])
+          required = {
+              "index": site / "index.html",
+              "correctness": site / "js/correctness-foundation.js",
+              "controller": site / "js/stockfish-controller.js",
+              "engine_layer": site / "js/stockfish-engine-layer.js",
+              "engine_js": site / "engine/stockfish-18-single.js",
+              "engine_wasm": site / "engine/stockfish-18-single.wasm",
+              "license": site / "engine/Copying.txt",
+              "source_notice": site / "engine/SOURCE.txt",
+              "source_archive": site / "engine/source/stockfish.js-v18.0.0-source.zip",
+              "checksums": site / "engine/SHA256SUMS.json",
+              "release_record": site / "engine/RELEASE.json",
+          }
 
-          html = (site / "index.html").read_text()
+          for label, path in required.items():
+              assert path.is_file() and path.stat().st_size > 0, (label, path)
+
+          assert required["engine_js"].stat().st_size > 10_000
+          assert required["engine_wasm"].stat().st_size > 50_000_000
+          assert required["license"].stat().st_size > 10_000
+          assert required["source_archive"].stat().st_size > 100_000
+
+          html = required["index"].read_text()
           assert 'js/correctness-foundation.js' in html
+          assert 'js/stockfish-controller.js' in html
+          assert 'js/stockfish-engine-layer.js' in html
+          assert html.index('js/stockfish-controller.js') < html.index('js/stockfish-engine-layer.js')
           assert 'objective-aware answers' in html
           assert 'Mate-in-one records are excluded' not in html
 
+          correctness = required["correctness"].read_text()
+          assert "correctness-foundation-1.2.2" in correctness
+
+          controller = required["controller"].read_text()
+          layer = required["engine_layer"].read_text()
+          assert "stockfish-controller-2.0" in controller
+          assert "stockfish-engine-layer-2.0" in layer
+          assert "new StockfishController" in layer
+          assert "The engine binary stays lazy" in layer
+
+          release = json.loads(required["release_record"].read_text())
+          assert release["tag"] == "v18.0.0"
+          assert release["upstreamOfficialStockfishCommit"] == "cb3d4ee"
+
+          assert all(
+              (site / "puzzles" / chunk["file"]).is_file()
+              for chunk in manifest["chunks"]
+          )
+
           print(
-              f"Verified {manifest['count']:,} puzzles in "
-              f"{len(manifest['chunks'])} chunks with objective-aware mate handling"
+              f"Verified {manifest['count']:,} puzzles, Build 1.2.2 correctness, "
+              f"and pinned Stockfish 18 Build 2.0."
           )
           PY
+
           du -sh _site
+          du -sh _site/engine
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
@@ -105,6 +169,7 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+
     steps:
       - name: Deploy to GitHub Pages
         id: deployment

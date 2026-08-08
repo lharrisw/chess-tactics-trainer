@@ -11,6 +11,7 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v6
 
@@ -18,12 +19,16 @@ jobs:
         run: |
           python -m py_compile scripts/build_pages.py
           python -m py_compile scripts/apply_correctness_foundation.py
+          python -m py_compile scripts/fetch_stockfish.py
+          python -m py_compile scripts/apply_stockfish_engine.py
 
-      - name: Check correctness addon syntax and Build 1.2.2 UX markers
+      - name: Check Build 1.2.2 correctness and puzzle UX
         run: |
           node --check js/correctness-foundation.js
+
           python - <<'PY'
           from pathlib import Path
+
           addon = Path("js/correctness-foundation.js").read_text()
           required = [
               "correctness-foundation-1.2.2",
@@ -46,9 +51,64 @@ jobs:
               "initialSetupReplayImmediatelyAvailable",
               "Refresh once the intro has finished",
           ]
+
           for marker in required:
               assert marker in addon, marker
-          print("Build 1.2.2 initial replay timing, progressive hints, and retry UX are present.")
+
+          print("Build 1.2.2 regression gate passed.")
+          PY
+
+      - name: Check Build 2.0 Stockfish source
+        run: |
+          node --check js/stockfish-controller.js
+          node --check js/stockfish-engine-layer.js
+          node tests/test-stockfish-controller.js
+
+          python - <<'PY'
+          from pathlib import Path
+
+          controller = Path("js/stockfish-controller.js").read_text()
+          layer = Path("js/stockfish-engine-layer.js").read_text()
+          fetcher = Path("scripts/fetch_stockfish.py").read_text()
+
+          required_controller = [
+              "stockfish-controller-2.0",
+              "stockfish-18-single.js",
+              "UCI_LimitStrength",
+              "UCI_Elo",
+              "Skill Level",
+              "makeGoCommand",
+              "class StockfishController",
+          ]
+
+          required_layer = [
+              "stockfish-engine-layer-2.0",
+              "global.ChessEngine = api",
+              "analyzeFen",
+              "bestMove",
+              "newGame",
+              "selfTest",
+              "The engine binary stays lazy",
+              "Local Stockfish engine",
+          ]
+
+          required_fetcher = [
+              'TAG = "v18.0.0"',
+              'UPSTREAM_COMMIT = "cb3d4ee"',
+              '"stockfish-18-single.js"',
+              '"stockfish-18-single.wasm"',
+              "Copying.txt",
+              "source.zip",
+          ]
+
+          for marker in required_controller:
+              assert marker in controller, marker
+          for marker in required_layer:
+              assert marker in layer, marker
+          for marker in required_fetcher:
+              assert marker in fetcher, marker
+
+          print("Build 2.0 Stockfish source regression gate passed.")
           PY
 
       - name: Build existing sample puzzle site
@@ -61,6 +121,7 @@ jobs:
             --min-popularity -100 \
             --min-plays 0 \
             --include-mate-in-one
+
           python scripts/apply_correctness_foundation.py --site-dir _site-test
 
       - name: Build mate-in-one regression fixture
@@ -73,12 +134,29 @@ jobs:
             --min-popularity -100 \
             --min-plays 0 \
             --include-mate-in-one
+
           python scripts/apply_correctness_foundation.py --site-dir _site-mate1
 
-      - name: Validate manifests, injection, and JavaScript syntax
+      - name: Create tiny Stockfish deployment stub for static integration test
+        run: |
+          mkdir -p _engine-test/source
+
+          printf 'self.onmessage=function(){};\n' > _engine-test/stockfish-18-single.js
+          printf 'wasm-stub\n' > _engine-test/stockfish-18-single.wasm
+          printf 'GPL test stub\n' > _engine-test/Copying.txt
+          printf 'Stockfish test source\n' > _engine-test/SOURCE.txt
+          printf 'source-stub\n' > _engine-test/source/stockfish.js-v18.0.0-source.zip
+
+          python scripts/apply_stockfish_engine.py \
+            --site-dir _site-test \
+            --engine-dir _engine-test
+
+      - name: Validate manifests and generated static integration
         run: |
           python - <<'PY'
-          import gzip, json, re
+          import gzip
+          import json
+          import re
           from pathlib import Path
 
           for site_name, expected in [("_site-test", 3), ("_site-mate1", 1)]:
@@ -101,16 +179,38 @@ jobs:
               assert 'objective-aware answers' in html
               assert (site / "js/correctness-foundation.js").is_file()
 
-          # The dedicated regression fixture must actually contain mateIn1.
+          # Build 2.0 is applied to the main static fixture.
+          site = Path("_site-test")
+          html = (site / "index.html").read_text()
+
+          assert 'js/stockfish-controller.js' in html
+          assert 'js/stockfish-engine-layer.js' in html
+          assert html.index('js/stockfish-controller.js') < html.index('js/stockfish-engine-layer.js')
+          assert (site / "js/stockfish-controller.js").is_file()
+          assert (site / "js/stockfish-engine-layer.js").is_file()
+          assert (site / "engine/stockfish-18-single.js").is_file()
+          assert (site / "engine/stockfish-18-single.wasm").is_file()
+          assert (site / "engine/Copying.txt").is_file()
+          assert (site / "engine/source/stockfish.js-v18.0.0-source.zip").is_file()
+
+          # Dedicated mate-in-one fixture must still contain mateIn1.
           mate_root = Path("_site-mate1/puzzles")
           mate_manifest = json.loads((mate_root / "manifest.json").read_text())
-          with gzip.open(mate_root / mate_manifest["chunks"][0]["file"], "rt", encoding="utf-8") as handle:
+          with gzip.open(
+              mate_root / mate_manifest["chunks"][0]["file"],
+              "rt",
+              encoding="utf-8",
+          ) as handle:
               record = json.load(handle)["p"][0]
+
           assert "mateIn1" in record[5].split()
 
-          # Keep the current application's inline JavaScript syntax check.
-          html = Path("index.html").read_text()
-          script = re.search(r"<script>(.*)</script>", html, re.S).group(1)
+          # Keep checking the base application's inline JavaScript too.
+          source_html = Path("index.html").read_text()
+          script = re.search(r"<script>(.*)</script>", source_html, re.S).group(1)
           Path("app-check.js").write_text(script)
+
+          print("Generated Build 1.2.2 + Build 2.0 integration passed.")
           PY
+
           node --check app-check.js

@@ -1,7 +1,7 @@
 const assert = require('assert');
 const Core = require('../js/play-stockfish.js');
 
-assert.strictEqual(Core.BUILD_ID, 'play-vs-stockfish-2.1');
+assert.strictEqual(Core.BUILD_ID, 'play-vs-stockfish-2.1.2');
 
 const tenFive = Core.parseTimeControl('10+5');
 assert.strictEqual(tenFive.enabled, true);

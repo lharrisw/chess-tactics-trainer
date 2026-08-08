@@ -217,7 +217,7 @@ jobs:
           ]
 
           required_apply = [
-              'SCRIPT_TAG = \\'<script src="js/postgame-analysis.js"></script>\\'',
+              "SCRIPT_TAG = '<script src=\"js/postgame-analysis.js\"></script>'",
               "js/stockfish-engine-layer.js",
               "js/play-stockfish.js",
               "js/app-layout.js",

@@ -13,7 +13,19 @@
   'use strict';
 
   const BUILD_ID = 'postgame-analysis-2.2';
+  const ANALYSIS_HOTFIX_ID = 'bounded-analysis-2.2.1';
   const PERSONAL_THEME = 'Personal mistake';
+
+  // Browser Stockfish is intentionally given a wall-clock budget rather than
+  // an unbounded "reach this depth no matter how long it takes" instruction.
+  // This makes full-game review predictable on ordinary GitHub Pages.
+  const ANALYSIS_PROFILES = {
+    10: { name: 'Quick',     movetime: 200,  watchdog: 6000 },
+    12: { name: 'Normal',    movetime: 500,  watchdog: 8000 },
+    14: { name: 'Deep',      movetime: 1000, watchdog: 12000 },
+    16: { name: 'Very deep', movetime: 2000, watchdog: 20000 },
+    18: { name: 'Maximum',   movetime: 4000, watchdog: 35000 }
+  };
   const FALLBACK_NOTEBOOK_KEY = 'chess-tactics-personal-mistakes-v1';
 
   const Core = {
@@ -368,13 +380,13 @@
           </select>
         </div>
         <div class="analysis-field">
-          <label for="analysis-depth">Analysis depth</label>
+          <label for="analysis-depth">Analysis speed</label>
           <select id="analysis-depth">
-            <option value="10">10 · Quick</option>
-            <option value="12" selected>12 · Normal</option>
-            <option value="14">14 · Deep</option>
-            <option value="16">16 · Very deep</option>
-            <option value="18">18 · Maximum</option>
+            <option value="10">Quick · ~0.2 s/search</option>
+            <option value="12" selected>Normal · ~0.5 s/search</option>
+            <option value="14">Deep · ~1 s/search</option>
+            <option value="16">Very deep · ~2 s/search</option>
+            <option value="18">Maximum · ~4 s/search</option>
           </select>
         </div>
       </div>
@@ -385,7 +397,7 @@
       </div>
 
       <div class="feedback neutral" id="analysis-status">
-        Choose a side and depth, then run the review.
+        Choose a side and analysis speed, then run the review.
       </div>
 
       <div id="analysis-progress-shell" aria-label="Analysis progress">
@@ -416,7 +428,8 @@
 
       <div class="note" id="analysis-method">
         Labels are trainer-defined, not Chess.com labels. They compare the played move
-        with full Stockfish at the same root position. Estimated win-chance loss:
+        with full Stockfish at the same root position using bounded browser analysis.
+        Estimated win-chance loss:
         under 5 points = Good, 5–12 = Inaccuracy, 12–25 = Mistake, 25+ = Blunder.
         Forced-mate and clearly-winning-position losses can be labeled Missed mate or
         Missed win. Engine scores shown below are from the mover's perspective.
@@ -687,6 +700,91 @@
     }
   }
 
+  function analysisProfile() {
+    return ANALYSIS_PROFILES[Number(ui.depth.value || 12)] || ANALYSIS_PROFILES[12];
+  }
+
+  function approximateReviewSeconds(moveCount, profile) {
+    // Worst common case is two searches per reviewed move. Engine setup and
+    // positions where the played move already equals best can make it shorter.
+    return Math.max(1, Math.ceil((moveCount * 2 * profile.movetime) / 1000));
+  }
+
+  function humanDuration(seconds) {
+    const s = Math.max(0, Math.round(Number(seconds) || 0));
+    if (s < 60) return s + ' sec';
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return m + ' min' + (r ? ' ' + r + ' sec' : '');
+  }
+
+  function setReviewProgress(completedUnits, totalUnits) {
+    const total = Math.max(1, Number(totalUnits) || 1);
+    const done = Math.max(0, Math.min(total, Number(completedUnits) || 0));
+    ui.progress.style.width = Math.round((done / total) * 100) + '%';
+  }
+
+  async function analyzeBounded(fen, options, context) {
+    const profile = context.profile;
+    const started = performance.now();
+    let watchdogTimer = null;
+    let timedOut = false;
+
+    const stageName = context.stage;
+    const moveLabel = context.moveLabel;
+    const moveIndex = context.moveIndex;
+    const moveTotal = context.moveTotal;
+
+    const searchOptions = Object.assign({}, options || {}, {
+      movetime: profile.movetime,
+      onInfo: function (info) {
+        if (context.token !== A.token) return;
+
+        const elapsed = Math.max(0, (performance.now() - started) / 1000);
+        const depthText =
+          info && info.depth ? ' · reached depth ' + info.depth : '';
+
+        setAnalysisStatus(
+          'Move ' + moveIndex + '/' + moveTotal +
+          ' · ' + stageName +
+          depthText +
+          ' · ' + elapsed.toFixed(1) + 's',
+          'neutral'
+        );
+
+        if (options && typeof options.onInfo === 'function') {
+          try { options.onInfo(info); } catch (_) {}
+        }
+      }
+    });
+
+    const searchPromise = global.ChessEngine.analyzeFen(fen, searchOptions);
+
+    const watchdogPromise = new Promise(function (_, reject) {
+      watchdogTimer = setTimeout(function () {
+        timedOut = true;
+        try { global.ChessEngine.stop(); } catch (_) {}
+        reject(
+          new Error(
+            'Stockfish exceeded the ' + profile.name.toLowerCase() +
+            ' analysis watchdog on ' + moveLabel + '.'
+          )
+        );
+      }, profile.watchdog);
+    });
+
+    try {
+      return await Promise.race([searchPromise, watchdogPromise]);
+    } finally {
+      if (watchdogTimer) clearTimeout(watchdogTimer);
+
+      // If the watchdog fired, do not leave a search silently running forever.
+      if (timedOut) {
+        try { global.ChessEngine.stop(); } catch (_) {}
+      }
+    }
+  }
+
   async function runAnalysis() {
     if (A.running || !A.snapshot) return;
 
@@ -697,6 +795,10 @@
     }
 
     const token = ++A.token;
+    const profile = analysisProfile();
+    const totalUnits = targets.length * 2;
+    let completedUnits = 0;
+
     A.running = true;
     A.results = [];
     A.selectedResult = null;
@@ -711,11 +813,20 @@
     ui.summary.classList.add('hidden');
     ui.viewer.classList.add('hidden');
     ui.results.innerHTML = '';
-    ui.progress.style.width = '0%';
+    setReviewProgress(0, totalUnits);
 
     A.previousStrength = global.ChessEngine.getStrength();
 
+    const estimate = approximateReviewSeconds(targets.length, profile);
+
     try {
+      setAnalysisStatus(
+        'Preparing full Stockfish 18 · ' + profile.name +
+        ' review · about ' + humanDuration(estimate) +
+        ' maximum search budget…',
+        'neutral'
+      );
+
       await global.ChessEngine.init();
       await global.ChessEngine.setStrength({ mode: 'full' });
 
@@ -724,28 +835,34 @@
 
         const position = targets[i];
         const label = Core.moveLabel(position.ply, position.move.san);
+        const moveIndex = i + 1;
 
         setAnalysisStatus(
-          'Analyzing ' + label + ' · ' + (i + 1) + ' of ' + targets.length + '…',
+          'Move ' + moveIndex + '/' + targets.length +
+          ' · finding best move · ' + profile.name +
+          ' (' + (profile.movetime / 1000).toFixed(1) + 's budget)…',
           'neutral'
         );
 
-        const best = await global.ChessEngine.analyzeFen(position.fen, {
-          depth: A.depth,
-          multiPv: 2,
-          onInfo: function (info) {
-            if (token !== A.token) return;
-            if (info && info.depth) {
-              setAnalysisStatus(
-                'Analyzing ' + label + ' · depth ' + info.depth +
-                ' · ' + (i + 1) + ' of ' + targets.length + '…',
-                'neutral'
-              );
-            }
+        const best = await analyzeBounded(
+          position.fen,
+          {
+            multiPv: 2
+          },
+          {
+            token,
+            profile,
+            stage: 'finding best move',
+            moveLabel: label,
+            moveIndex,
+            moveTotal: targets.length
           }
-        });
+        );
 
         if (token !== A.token) throw new Error('Analysis cancelled.');
+
+        completedUnits += 1;
+        setReviewProgress(completedUnits, totalUnits);
 
         const bestLine = best.lines && best.lines[0] ? best.lines[0] : null;
         const secondLine = best.lines && best.lines[1] ? best.lines[1] : null;
@@ -755,13 +872,47 @@
 
         if (bestMove === position.move.uci) {
           playedLine = bestLine;
+
+          // Count the skipped comparison search as completed so the progress
+          // bar still advances evenly.
+          completedUnits += 1;
+          setReviewProgress(completedUnits, totalUnits);
+
+          setAnalysisStatus(
+            'Move ' + moveIndex + '/' + targets.length +
+            ' · played move matches Stockfish’s first choice.',
+            'neutral'
+          );
         } else {
-          const played = await global.ChessEngine.analyzeFen(position.fen, {
-            depth: A.depth,
-            multiPv: 1,
-            searchMoves: [position.move.uci]
-          });
-          playedLine = played.lines && played.lines[0] ? played.lines[0] : null;
+          setAnalysisStatus(
+            'Move ' + moveIndex + '/' + targets.length +
+            ' · checking played move ' + position.move.san +
+            ' · ' + profile.name +
+            ' (' + (profile.movetime / 1000).toFixed(1) + 's budget)…',
+            'neutral'
+          );
+
+          const played = await analyzeBounded(
+            position.fen,
+            {
+              multiPv: 1,
+              searchMoves: [position.move.uci]
+            },
+            {
+              token,
+              profile,
+              stage: 'checking played move',
+              moveLabel: label,
+              moveIndex,
+              moveTotal: targets.length
+            }
+          );
+
+          playedLine =
+            played.lines && played.lines[0] ? played.lines[0] : null;
+
+          completedUnits += 1;
+          setReviewProgress(completedUnits, totalUnits);
         }
 
         if (token !== A.token) throw new Error('Analysis cancelled.');
@@ -822,15 +973,16 @@
 
         A.results.push(result);
         renderResultRow(result);
-        ui.progress.style.width =
-          Math.round(((i + 1) / targets.length) * 100) + '%';
       }
 
       if (token !== A.token) throw new Error('Analysis cancelled.');
 
+      setReviewProgress(totalUnits, totalUnits);
       renderSummary();
+
       setAnalysisStatus(
-        'Analysis complete · full Stockfish 18 at depth ' + A.depth + '.',
+        'Analysis complete · full Stockfish 18 · ' +
+        profile.name + ' bounded review.',
         'good'
       );
 
@@ -844,7 +996,9 @@
       setAnalysisStatus(
         cancelled
           ? 'Analysis canceled.'
-          : 'Analysis stopped: ' + (error.message || String(error)),
+          : 'Analysis stopped safely: ' +
+            (error.message || String(error)) +
+            ' You can run it again at Quick speed.',
         cancelled ? 'neutral' : 'bad'
       );
     } finally {
@@ -1211,7 +1365,7 @@
         uci === result.bestMove
           ? null
           : await global.ChessEngine.analyzeFen(result.fen, {
-              depth: A.depth,
+              movetime: analysisProfile().movetime,
               multiPv: 1,
               searchMoves: [uci]
             });
@@ -1439,7 +1593,9 @@
 
   global.PostGameAnalysis = {
     build: BUILD_ID,
+    hotfix: ANALYSIS_HOTFIX_ID,
     method: 'full-stockfish-root-comparison-v1',
+    scheduler: 'bounded-movetime-with-watchdog',
     labels: 'estimated-win-chance-loss',
     open: openAnalysis,
     close: function () { closeAnalysis(true); },

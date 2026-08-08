@@ -10,6 +10,15 @@ assert.strictEqual(Core.formatScore({ type: 'mate', value: -2 }), '-M2');
 assert(Core.scoreToCp({ type: 'mate', value: 2 }) > 90000);
 assert(Core.scoreToCp({ type: 'mate', value: -2 }) < -90000);
 
+assert.deepStrictEqual(
+  Core.invertScore({ type: 'cp', value: 85, lowerbound: true, upperbound: false }),
+  { type: 'cp', value: -85, lowerbound: false, upperbound: true }
+);
+assert.deepStrictEqual(
+  Core.invertScore({ type: 'mate', value: 3, lowerbound: false, upperbound: false }),
+  { type: 'mate', value: -3, lowerbound: false, upperbound: false }
+);
+
 assert.strictEqual(Core.moveLabel(0, 'e4'), '1. e4');
 assert.strictEqual(Core.moveLabel(1, 'e5'), '1... e5');
 assert.strictEqual(Core.moveLabel(20, 'Nf3'), '11. Nf3');

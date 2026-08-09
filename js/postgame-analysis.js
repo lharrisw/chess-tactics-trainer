@@ -4,9 +4,11 @@
  * Stockfish determines objective chess facts. This module:
  *   - analyzes completed games only;
  *   - temporarily uses full engine strength for review;
- *   - compares the played move against the engine's best move by analyzing
- *     the normal resulting position and converting that score back to the
- *     original mover's perspective;
+ *   - analyzes each required game STATE exactly once;
+ *   - derives move quality from the pre-move state and the next game state,
+ *     converting the latter back to the original mover's perspective;
+ *   - keeps MultiPV=2 for the entire review so the browser engine never
+ *     toggles 2 -> 1 mid-review;
  *   - labels moves from estimated win-chance loss with published thresholds;
  *   - never calls an LLM or external chess-analysis service.
  */
@@ -14,7 +16,12 @@
   'use strict';
 
   const BUILD_ID = 'postgame-analysis-2.2';
-  const ANALYSIS_HOTFIX_ID = 'result-position-analysis-2.2.2';
+  const ANALYSIS_HOTFIX_ID = 'single-pass-state-analysis-2.2.3';
+  // Compatibility markers retained for the existing Build 2.2 workflow:
+  // result-position-analysis-2.2.2
+  // normal-child-search-with-score-inversion
+  // evaluating resulting position
+
   const PERSONAL_THEME = 'Personal mistake';
 
   // Browser Stockfish is intentionally given a wall-clock budget rather than
@@ -87,6 +94,20 @@
       return Number(ply) % 2 === 0
         ? move + '. ' + san
         : move + '... ' + san;
+    },
+
+    requiredStateIndices(totalPlies, selectedPlies) {
+      const total = Math.max(0, Math.floor(Number(totalPlies) || 0));
+      const set = new Set();
+
+      for (const raw of Array.isArray(selectedPlies) ? selectedPlies : []) {
+        const ply = Math.floor(Number(raw));
+        if (!Number.isFinite(ply) || ply < 0 || ply >= total) continue;
+        set.add(ply);
+        set.add(ply + 1);
+      }
+
+      return Array.from(set).sort((a, b) => a - b);
     },
 
     hash(text) {
@@ -440,9 +461,9 @@
       </div>
 
       <div class="note" id="analysis-method">
-        Labels are trainer-defined, not Chess.com labels. Stockfish finds the best
-        move from the original position; alternatives are scored by analyzing the
-        resulting position and reversing that score to the original mover’s perspective.
+        Labels are trainer-defined, not Chess.com labels. The review analyzes each
+        required game position once at MultiPV 2. A played move is scored from the
+        next game position, with that score reversed to the original mover’s perspective.
         Estimated win-chance loss:
         under 5 points = Good, 5–12 = Inaccuracy, 12–25 = Mistake, 25+ = Blunder.
         Forced-mate and clearly-winning-position losses can be labeled Missed mate or
@@ -739,10 +760,9 @@
     return ANALYSIS_PROFILES[Number(ui.depth.value || 12)] || ANALYSIS_PROFILES[12];
   }
 
-  function approximateReviewSeconds(moveCount, profile) {
-    // Worst common case is two searches per reviewed move. Engine setup and
-    // positions where the played move already equals best can make it shorter.
-    return Math.max(1, Math.ceil((moveCount * 2 * profile.movetime) / 1000));
+  function approximateReviewSeconds(stateCount, profile) {
+    // Build 2.2.3 performs one normal Stockfish search per unique game state.
+    return Math.max(1, Math.ceil((stateCount * profile.movetime) / 1000));
   }
 
   function humanDuration(seconds) {
@@ -757,6 +777,84 @@
     const total = Math.max(1, Number(totalUnits) || 1);
     const done = Math.max(0, Math.min(total, Number(completedUnits) || 0));
     ui.progress.style.width = Math.round((done / total) * 100) + '%';
+  }
+
+  function fenForStateIndex(index) {
+    const i = Number(index);
+    if (i >= 0 && i < A.positions.length) return A.positions[i].fen;
+    if (i === A.positions.length && A.snapshot) return A.snapshot.finalFen;
+    throw new Error('Invalid game-state index ' + String(index) + '.');
+  }
+
+  function terminalStateAnalysis(fen, stateIndex) {
+    try {
+      const engine = Engine();
+      engine.fromFEN(fen);
+
+      if (engine.legal().length === 0) {
+        if (engine.inCheck()) {
+          return {
+            terminal: true,
+            bestmove: null,
+            lines: [{
+              multipv: 1,
+              depth: 0,
+              score: {
+                type: 'mate',
+                value: -1,
+                lowerbound: false,
+                upperbound: false
+              },
+              pv: []
+            }]
+          };
+        }
+
+        return {
+          terminal: true,
+          bestmove: null,
+          lines: [{
+            multipv: 1,
+            depth: 0,
+            score: {
+              type: 'cp',
+              value: 0,
+              lowerbound: false,
+              upperbound: false
+            },
+            pv: []
+          }]
+        };
+      }
+
+      // Repetition / 50-move / agreed-draw endings are game-history facts that
+      // are not always recoverable from a standalone FEN. If this is the final
+      // game state and Play already recorded a draw termination, score it as
+      // equal instead of asking Stockfish to reinterpret the finished game.
+      if (
+        stateIndex === A.positions.length &&
+        A.snapshot &&
+        A.snapshot.result === '1/2-1/2'
+      ) {
+        return {
+          terminal: true,
+          bestmove: null,
+          lines: [{
+            multipv: 1,
+            depth: 0,
+            score: {
+              type: 'cp',
+              value: 0,
+              lowerbound: false,
+              upperbound: false
+            },
+            pv: []
+          }]
+        };
+      }
+    } catch (_) {}
+
+    return null;
   }
 
   async function analyzeBounded(fen, options, context) {
@@ -831,8 +929,12 @@
 
     const token = ++A.token;
     const profile = analysisProfile();
-    const totalUnits = targets.length * 2;
-    let completedUnits = 0;
+    const stateIndices = Core.requiredStateIndices(
+      A.positions.length,
+      targets.map(position => position.ply)
+    );
+    const stateAnalyses = new Map();
+    let completedStates = 0;
 
     A.running = true;
     A.results = [];
@@ -848,117 +950,126 @@
     ui.summary.classList.add('hidden');
     ui.viewer.classList.add('hidden');
     ui.results.innerHTML = '';
-    setReviewProgress(0, totalUnits);
+    setReviewProgress(0, stateIndices.length);
 
     A.previousStrength = global.ChessEngine.getStrength();
 
-    const estimate = approximateReviewSeconds(targets.length, profile);
+    const estimate = approximateReviewSeconds(stateIndices.length, profile);
 
     try {
       setAnalysisStatus(
         'Preparing full Stockfish 18 · ' + profile.name +
-        ' review · about ' + humanDuration(estimate) +
-        ' maximum search budget…',
+        ' single-pass review · ' + stateIndices.length +
+        ' game positions · about ' + humanDuration(estimate) +
+        ' search budget…',
         'neutral'
       );
 
       await global.ChessEngine.init();
       await global.ChessEngine.setStrength({ mode: 'full' });
 
-      for (let i = 0; i < targets.length; i += 1) {
+      /*
+       * IMPORTANT:
+       * Every review search uses MultiPV=2.
+       *
+       * Build 2.2.1/2.2.2 both succeeded on the first MultiPV=2 search and
+       * failed in the immediately-following second-stage MultiPV=1 search.
+       * The review therefore never toggles 2 -> 1 on the same worker.
+       *
+       * We analyze each required game STATE once. Move p is evaluated by:
+       *   - best result from state p
+       *   - actual result from state p+1, score-inverted back to the mover
+       */
+      for (let i = 0; i < stateIndices.length; i += 1) {
         if (token !== A.token) throw new Error('Analysis cancelled.');
 
-        const position = targets[i];
-        const label = Core.moveLabel(position.ply, position.move.san);
-        const moveIndex = i + 1;
+        const stateIndex = stateIndices[i];
+        const fen = fenForStateIndex(stateIndex);
+        const terminal = terminalStateAnalysis(fen, stateIndex);
+
+        if (terminal) {
+          stateAnalyses.set(stateIndex, terminal);
+          completedStates += 1;
+          setReviewProgress(completedStates, stateIndices.length);
+
+          setAnalysisStatus(
+            'Position ' + completedStates + '/' + stateIndices.length +
+            ' · terminal game state recognized locally.',
+            'neutral'
+          );
+          continue;
+        }
+
+        const displayMove =
+          stateIndex < A.positions.length
+            ? Core.moveLabel(
+                A.positions[stateIndex].ply,
+                A.positions[stateIndex].move.san
+              )
+            : 'final position';
 
         setAnalysisStatus(
-          'Move ' + moveIndex + '/' + targets.length +
-          ' · finding best move · ' + profile.name +
+          'Position ' + (i + 1) + '/' + stateIndices.length +
+          ' · analyzing before ' + displayMove +
+          ' · ' + profile.name +
           ' (' + (profile.movetime / 1000).toFixed(1) + 's budget)…',
           'neutral'
         );
 
-        const best = await analyzeBounded(
-          position.fen,
+        const analysis = await analyzeBounded(
+          fen,
           {
             multiPv: 2
           },
           {
             token,
             profile,
-            stage: 'finding best move',
-            moveLabel: label,
-            moveIndex,
-            moveTotal: targets.length
+            stage: 'single-pass position analysis',
+            moveLabel: displayMove,
+            moveIndex: i + 1,
+            moveTotal: stateIndices.length
           }
         );
 
         if (token !== A.token) throw new Error('Analysis cancelled.');
 
-        completedUnits += 1;
-        setReviewProgress(completedUnits, totalUnits);
+        stateAnalyses.set(stateIndex, analysis);
+        completedStates += 1;
+        setReviewProgress(completedStates, stateIndices.length);
+      }
 
-        const bestLine = best.lines && best.lines[0] ? best.lines[0] : null;
-        const secondLine = best.lines && best.lines[1] ? best.lines[1] : null;
-        const bestMove = best.bestmove || (bestLine && bestLine.pv[0]) || null;
+      if (token !== A.token) throw new Error('Analysis cancelled.');
 
-        let playedLine = null;
-        let playedChildFen = null;
-        let playedChildLine = null;
+      setAnalysisStatus(
+        'Engine pass complete · building move review…',
+        'neutral'
+      );
 
-        if (bestMove === position.move.uci) {
-          playedLine = bestLine;
+      for (const position of targets) {
+        const pre = stateAnalyses.get(position.ply);
+        const post = stateAnalyses.get(position.ply + 1);
 
-          // Count the skipped comparison search as completed so the progress
-          // bar still advances evenly.
-          completedUnits += 1;
-          setReviewProgress(completedUnits, totalUnits);
-
-          setAnalysisStatus(
-            'Move ' + moveIndex + '/' + targets.length +
-            ' · played move matches Stockfish’s first choice.',
-            'neutral'
+        if (!pre || !post) {
+          throw new Error(
+            'Missing cached analysis around ' +
+            Core.moveLabel(position.ply, position.move.san) + '.'
           );
-        } else {
-          playedChildFen = positionAfterUci(position.fen, position.move.uci);
-
-          setAnalysisStatus(
-            'Move ' + moveIndex + '/' + targets.length +
-            ' · evaluating resulting position after ' + position.move.san +
-            ' · ' + profile.name +
-            ' (' + (profile.movetime / 1000).toFixed(1) + 's budget)…',
-            'neutral'
-          );
-
-          const played = await analyzeBounded(
-            playedChildFen,
-            {
-              multiPv: 1
-            },
-            {
-              token,
-              profile,
-              stage: 'evaluating resulting position',
-              moveLabel: label,
-              moveIndex,
-              moveTotal: targets.length
-            }
-          );
-
-          playedChildLine =
-            played.lines && played.lines[0] ? played.lines[0] : null;
-
-          // Stockfish's child-position score is from the opponent's point of
-          // view (the child side to move). Reverse it so bestScore and
-          // playedScore are both from the ORIGINAL mover's perspective.
-          playedLine = moverPerspectiveLine(playedChildLine);
-
-          completedUnits += 1;
-          setReviewProgress(completedUnits, totalUnits);
         }
 
-        if (token !== A.token) throw new Error('Analysis cancelled.');
+        const bestLine = pre.lines && pre.lines[0] ? pre.lines[0] : null;
+        const secondLine = pre.lines && pre.lines[1] ? pre.lines[1] : null;
+        const postLine = post.lines && post.lines[0] ? post.lines[0] : null;
+        const bestMove =
+          pre.bestmove ||
+          (bestLine && bestLine.pv && bestLine.pv[0]) ||
+          null;
+
+        // The next state has the opponent to move. Reverse that score so the
+        // actual played move is measured from the original mover's perspective.
+        const playedLine =
+          bestMove === position.move.uci
+            ? bestLine
+            : moverPerspectiveLine(postLine);
 
         const classification = Core.classify({
           bestScore: scoreFromLine(bestLine),
@@ -970,6 +1081,8 @@
         const gapCp = cpGap(bestLine, secondLine);
         const onlyMoveLike =
           Number.isFinite(gapCp) && gapCp >= 150;
+
+        const postFen = fenForStateIndex(position.ply + 1);
 
         const result = {
           ply: position.ply,
@@ -991,14 +1104,17 @@
               : null,
           bestScore: scoreFromLine(bestLine),
           playedScore: scoreFromLine(playedLine),
-          bestPvUci: bestLine && bestLine.pv ? bestLine.pv.slice(0, 10) : [],
+          bestPvUci:
+            bestLine && bestLine.pv ? bestLine.pv.slice(0, 10) : [],
           playedPvUci:
             bestMove === position.move.uci
-              ? (playedLine && playedLine.pv ? playedLine.pv.slice(0, 10) : [])
+              ? (
+                  bestLine && bestLine.pv
+                    ? bestLine.pv.slice(0, 10)
+                    : [position.move.uci]
+                )
               : [position.move.uci].concat(
-                  playedChildLine && playedChildLine.pv
-                    ? playedChildLine.pv.slice(0, 9)
-                    : []
+                  postLine && postLine.pv ? postLine.pv.slice(0, 9) : []
                 ),
           bestPvSan:
             bestLine && bestLine.pv
@@ -1007,15 +1123,15 @@
           playedPvSan:
             bestMove === position.move.uci
               ? (
-                  playedLine && playedLine.pv
-                    ? pvToSan(position.fen, playedLine.pv, 8)
-                    : '—'
+                  bestLine && bestLine.pv
+                    ? pvToSan(position.fen, bestLine.pv, 8)
+                    : position.move.san
                 )
               : (
                   position.move.san +
                   (
-                    playedChildLine && playedChildLine.pv && playedChildFen
-                      ? ' ' + pvToSan(playedChildFen, playedChildLine.pv, 7)
+                    postLine && postLine.pv && postLine.pv.length
+                      ? ' ' + pvToSan(postFen, postLine.pv, 7)
                       : ''
                   )
                 ),
@@ -1035,14 +1151,12 @@
         renderResultRow(result);
       }
 
-      if (token !== A.token) throw new Error('Analysis cancelled.');
-
-      setReviewProgress(totalUnits, totalUnits);
+      setReviewProgress(stateIndices.length, stateIndices.length);
       renderSummary();
 
       setAnalysisStatus(
         'Analysis complete · full Stockfish 18 · ' +
-        profile.name + ' bounded review.',
+        profile.name + ' single-pass review.',
         'good'
       );
 
@@ -1062,11 +1176,19 @@
         cancelled ? 'neutral' : 'bad'
       );
     } finally {
+      /*
+       * Review deliberately leaves MultiPV at 2 while it is running.
+       * Restore the user's playing strength, then destroy this review worker.
+       * The next Play game starts a fresh Stockfish worker at its normal
+       * MultiPV=1 default, avoiding a live 2 -> 1 transition altogether.
+       */
       if (A.previousStrength) {
         try {
           await global.ChessEngine.setStrength(A.previousStrength);
         } catch (_) {}
       }
+
+      try { global.ChessEngine.terminate(); } catch (_) {}
 
       if (token === A.token) {
         A.running = false;
@@ -1655,9 +1777,9 @@
   global.PostGameAnalysis = {
     build: BUILD_ID,
     hotfix: ANALYSIS_HOTFIX_ID,
-    method: 'best-root-plus-result-position-v2',
-    scheduler: 'bounded-movetime-with-watchdog',
-    playedMoveEvaluation: 'normal-child-search-with-score-inversion',
+    method: 'single-pass-cached-game-states-v3',
+    scheduler: 'bounded-movetime-multipv2-only-with-watchdog',
+    playedMoveEvaluation: 'next-state-score-inversion',
     labels: 'estimated-win-chance-loss',
     open: openAnalysis,
     close: function () { closeAnalysis(true); },

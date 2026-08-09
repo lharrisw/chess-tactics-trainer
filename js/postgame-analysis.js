@@ -316,9 +316,76 @@
       }
 
       #pane-play.ct-guided-review-open #play-analysis{
-        display:flex !important;
-        max-height:calc(100vh - 108px);
+        /*
+         * Build 2.2.6:
+         * Reserve the review's full desktop height immediately. New analyzed
+         * moves are inserted into the internal scroll region rather than
+         * increasing document height and pushing controls downward.
+         */
+        display:grid !important;
+        grid-template-rows:
+          auto
+          auto
+          auto
+          auto
+          minmax(0,1fr)
+          auto;
+        height:min(690px, calc(100vh - 96px));
+        max-height:min(690px, calc(100vh - 96px));
+        min-height:560px;
         overflow:hidden;
+        align-content:stretch;
+      }
+
+      #pane-play.ct-guided-review-open #analysis-setup,
+      #pane-play.ct-guided-review-open #analysis-review-meta,
+      #pane-play.ct-guided-review-open #analysis-summary,
+      #pane-play.ct-guided-review-open #analysis-viewer,
+      #pane-play.ct-guided-review-open #analysis-list-head,
+      #pane-play.ct-guided-review-open #analysis-method{
+        min-height:0;
+      }
+
+      /*
+       * The selected-move area gets a stable footprint. Different labels,
+       * engine lines, or Retry messages should not make the navigation/buttons
+       * jump around from one move to the next.
+       */
+      #pane-play.ct-guided-review-open #analysis-viewer:not(.hidden){
+        min-height:274px;
+        max-height:274px;
+        overflow-y:auto;
+        scrollbar-width:thin;
+      }
+
+      /*
+       * This is the only region intended to grow as analysis completes.
+       * Its height is reserved up front and additional move rows scroll inside.
+       */
+      #pane-play.ct-guided-review-open #analysis-results{
+        min-height:150px;
+        height:100%;
+        max-height:none;
+        overflow-y:auto;
+        overscroll-behavior:contain;
+        scrollbar-gutter:stable;
+      }
+
+      /*
+       * Keep the move-list toolbar attached to its scroll region.
+       */
+      #pane-play.ct-guided-review-open #analysis-list-head{
+        margin-top:0;
+      }
+
+      /*
+       * Engine-method details remain out of the way at the bottom. Opening
+       * them scrolls their own content instead of extending the document.
+       */
+      #pane-play.ct-guided-review-open #analysis-method[open]{
+        max-height:110px;
+        overflow-y:auto;
+        scrollbar-width:thin;
       }
 
       .analysis-heading{
@@ -588,7 +655,6 @@
         gap:4px;
         overflow-y:auto;
         min-height:0;
-        flex:1 1 auto;
         padding-right:3px;
         overscroll-behavior:contain;
         scrollbar-width:thin;
@@ -689,13 +755,27 @@
         }
 
         #pane-play.ct-guided-review-open #play-analysis{
+          display:flex !important;
+          height:auto;
+          min-height:0;
+          max-height:none;
+          overflow:visible;
+        }
+
+        #pane-play.ct-guided-review-open #analysis-viewer:not(.hidden){
+          min-height:0;
           max-height:none;
           overflow:visible;
         }
 
         #analysis-results{
+          min-height:220px;
           max-height:360px;
-          flex:none;
+        }
+
+        #pane-play.ct-guided-review-open #analysis-method[open]{
+          max-height:none;
+          overflow:visible;
         }
 
         .analysis-eval-grid{
@@ -2295,6 +2375,7 @@
     playedMoveEvaluation: 'next-state-score-inversion',
     workspaceLayout: 'guided-review-panel-2.2.5',
     reviewUx: 'selected-move-first-compact-list-key-navigation',
+    reviewGeometry: 'fixed-height-pinned-controls-scroll-list-2.2.6',
     labels: 'estimated-win-chance-loss',
     open: openAnalysis,
     close: function () { closeAnalysis(true); },

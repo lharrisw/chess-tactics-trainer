@@ -201,11 +201,13 @@ jobs:
 
           required_review = [
               "postgame-analysis-2.2",
-              "Full-strength Stockfish 18",
-              "result-position-analysis-2.2.2",
+              "single-pass-state-analysis-2.2.3",
+              "single-pass-cached-game-states-v3",
+              "bounded-movetime-multipv2-only-with-watchdog",
+              "guided-review-panel-2.2.5",
+              "selected-move-first-compact-list-key-navigation",
               "Core.invertScore",
-              "evaluating resulting position",
-              "normal-child-search-with-score-inversion",
+              "requiredStateIndices",
               "estimated win-chance loss",
               "Missed mate",
               "Missed win",
@@ -217,6 +219,9 @@ jobs:
               "writePuzzleBatch",
               "refreshDBStats",
               "global.ChessEngine.setStrength({ mode: 'full' })",
+              "Next key move",
+              "analysis-key-moves",
+              "How the review rates moves",
           ]
 
           required_apply = [

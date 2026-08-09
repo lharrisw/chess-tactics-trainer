@@ -287,6 +287,34 @@
         display:flex;flex-direction:column;gap:14px;
         border-top:1px solid var(--line);padding-top:16px;margin-top:4px;
       }
+
+      /*
+       * Build 2.2.4: analysis is a dedicated workspace, not content appended
+       * underneath the finished-game screen.
+       */
+      #play-game.ct-analysis-workspace > :not(#play-analysis){
+        display:none !important;
+      }
+
+      #play-game.ct-analysis-workspace{
+        display:block !important;
+      }
+
+      #play-game.ct-analysis-workspace #play-analysis{
+        border-top:0 !important;
+        padding-top:0 !important;
+        margin-top:0 !important;
+        max-height:calc(100vh - 118px);
+        overflow-y:auto;
+        overscroll-behavior:contain;
+        scrollbar-gutter:stable;
+        padding-right:5px;
+      }
+
+      #play-game.ct-analysis-workspace #analysis-results{
+        max-height:min(430px, 42vh);
+      }
+
       #play-analysis.hidden{display:none!important;}
       #play-analysis .analysis-heading{
         display:flex;align-items:flex-start;justify-content:space-between;gap:12px;
@@ -373,6 +401,12 @@
       @media(max-width:620px){
         #play-analysis .analysis-controls{grid-template-columns:1fr;}
         #analysis-results{max-height:360px;}
+
+        #play-game.ct-analysis-workspace #play-analysis{
+          max-height:none;
+          overflow-y:visible;
+          padding-right:0;
+        }
       }
     `;
     document.head.appendChild(style);
@@ -570,8 +604,16 @@
       'neutral'
     );
 
+    const game = document.getElementById('play-game');
+    if (game) game.classList.add('ct-analysis-workspace');
+
     showFinalPosition();
-    ui.panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    // Keep the chessboard and review visible together. Build 2.2 previously
+    // forced the browser to scroll down to the appended analysis panel.
+    // The analysis now replaces the post-game controls in the right column,
+    // so no page-level scroll is necessary.
+    ui.panel.scrollTop = 0;
   }
 
   function closeAnalysis(restoreBoard) {
@@ -584,6 +626,9 @@
 
     A.open = false;
     ui.panel.classList.add('hidden');
+
+    const game = document.getElementById('play-game');
+    if (game) game.classList.remove('ct-analysis-workspace');
   }
 
   function buildPositions(snapshot) {
@@ -1780,6 +1825,7 @@
     method: 'single-pass-cached-game-states-v3',
     scheduler: 'bounded-movetime-multipv2-only-with-watchdog',
     playedMoveEvaluation: 'next-state-score-inversion',
+    workspaceLayout: 'side-by-side-in-place-2.2.4',
     labels: 'estimated-win-chance-loss',
     open: openAnalysis,
     close: function () { closeAnalysis(true); },

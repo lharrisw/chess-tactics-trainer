@@ -254,7 +254,8 @@
     retry: null,
     previousStrength: null,
     side: 'both',
-    depth: 12
+    depth: 12,
+    keyOnly: false
   };
 
   let ui = null;
@@ -283,96 +284,378 @@
     const style = document.createElement('style');
     style.id = 'ct-analysis-2-2-style';
     style.textContent = `
-      #play-analysis{
-        display:flex;flex-direction:column;gap:14px;
-        border-top:1px solid var(--line);padding-top:16px;margin-top:4px;
-      }
-
       /*
-       * Build 2.2.4: analysis is a dedicated workspace, not content appended
-       * underneath the finished-game screen.
+       * Build 2.2.5 — Guided Review UI
+       *
+       * Inspired by the interaction pattern of mainstream chess review tools:
+       * board stays visible; one move gets the focus; the full move list stays
+       * compact; engine detail is secondary rather than the entire interface.
        */
-      #play-game.ct-analysis-workspace > :not(#play-analysis){
-        display:none !important;
-      }
 
-      #play-game.ct-analysis-workspace{
-        display:block !important;
-      }
-
-      #play-game.ct-analysis-workspace #play-analysis{
-        border-top:0 !important;
-        padding-top:0 !important;
-        margin-top:0 !important;
-        max-height:calc(100vh - 118px);
-        overflow-y:auto;
-        overscroll-behavior:contain;
-        scrollbar-gutter:stable;
-        padding-right:5px;
-      }
-
-      #play-game.ct-analysis-workspace #analysis-results{
-        max-height:min(430px, 42vh);
+      #play-analysis{
+        display:flex;
+        flex-direction:column;
+        gap:12px;
+        min-height:0;
       }
 
       #play-analysis.hidden{display:none!important;}
-      #play-analysis .analysis-heading{
-        display:flex;align-items:flex-start;justify-content:space-between;gap:12px;
+
+      /*
+       * Explicitly hide the finished-game controls while review is open.
+       * Using the Play pane as the state owner is more robust than relying on
+       * a direct-child selector on #play-game.
+       */
+      #pane-play.ct-guided-review-open #play-game > .play-summary,
+      #pane-play.ct-guided-review-open #play-status,
+      #pane-play.ct-guided-review-open #play-thinking,
+      #pane-play.ct-guided-review-open #play-moves,
+      #pane-play.ct-guided-review-open #play-game > .btns,
+      #pane-play.ct-guided-review-open #play-after-buttons{
+        display:none !important;
       }
-      #play-analysis .analysis-heading strong{font-size:1rem;}
-      #play-analysis .analysis-heading .note{margin:3px 0 0;}
+
+      #pane-play.ct-guided-review-open #play-analysis{
+        display:flex !important;
+        max-height:calc(100vh - 108px);
+        overflow:hidden;
+      }
+
+      .analysis-heading{
+        display:flex;
+        align-items:flex-start;
+        justify-content:space-between;
+        gap:12px;
+        flex:0 0 auto;
+      }
+
+      .analysis-heading strong{
+        display:block;
+        font-size:1rem;
+      }
+
+      .analysis-heading .note{
+        margin:3px 0 0;
+        line-height:1.35;
+      }
+
+      #analysis-setup{
+        display:flex;
+        flex-direction:column;
+        gap:10px;
+        flex:0 0 auto;
+      }
+
+      #play-analysis.has-results:not(.show-setup) #analysis-setup{
+        display:none;
+      }
+
+      #analysis-review-meta{
+        display:none;
+        align-items:center;
+        justify-content:space-between;
+        gap:10px;
+        padding:8px 10px;
+        border:1px solid var(--line);
+        border-radius:8px;
+        background:#2b2a27;
+        font-size:.74rem;
+        color:var(--muted);
+        flex:0 0 auto;
+      }
+
+      #play-analysis.has-results #analysis-review-meta{
+        display:flex;
+      }
+
+      #analysis-review-meta button{
+        border:0;
+        background:transparent;
+        color:var(--text);
+        font:inherit;
+        font-weight:800;
+        cursor:pointer;
+        padding:3px 0;
+      }
+
       #play-analysis .analysis-controls{
-        display:grid;grid-template-columns:1fr 1fr;gap:10px;
+        display:grid;
+        grid-template-columns:1fr 1fr;
+        gap:10px;
       }
+
       #play-analysis .analysis-field{
-        display:flex;flex-direction:column;gap:5px;
+        display:flex;
+        flex-direction:column;
+        gap:5px;
       }
+
       #play-analysis .analysis-field label{
-        color:var(--muted);font-size:.72rem;font-weight:700;
+        color:var(--muted);
+        font-size:.72rem;
+        font-weight:700;
       }
+
       #play-analysis select{
-        background:var(--panel2);color:var(--text);border:1px solid var(--line);
-        border-radius:7px;padding:10px 11px;font:inherit;
-      }
-      #analysis-progress-shell{
-        height:8px;border-radius:999px;background:#242320;overflow:hidden;
-      }
-      #analysis-progress{
-        width:0;height:100%;background:var(--green);transition:width .15s linear;
-      }
-      #analysis-summary{
-        background:var(--panel2);border:1px solid var(--line);border-radius:9px;
-        padding:13px 15px;line-height:1.5;
-      }
-      #analysis-summary .summary-big{font-size:.96rem;font-weight:800;}
-      #analysis-summary .summary-small{color:var(--muted);font-size:.75rem;margin-top:4px;}
-      #analysis-critical{
-        display:flex;flex-wrap:wrap;gap:7px;margin-top:9px;
-      }
-      #analysis-critical button{
-        border:1px solid var(--line);background:#282724;color:var(--text);
-        border-radius:999px;padding:6px 9px;font:inherit;font-size:.72rem;cursor:pointer;
-      }
-      #analysis-results{
-        display:flex;flex-direction:column;gap:8px;
-        max-height:430px;overflow-y:auto;padding-right:2px;
-      }
-      .analysis-row{
-        width:100%;text-align:left;border:1px solid var(--line);background:var(--panel2);
-        color:var(--text);border-radius:9px;padding:11px 12px;cursor:pointer;
+        background:var(--panel2);
+        color:var(--text);
+        border:1px solid var(--line);
+        border-radius:7px;
+        padding:10px 11px;
         font:inherit;
       }
-      .analysis-row:hover{border-color:#66635d;}
-      .analysis-row.selected{outline:2px solid var(--green);outline-offset:-2px;}
-      .analysis-row.critical{border-left:4px solid #d59b34;}
-      .analysis-row-top{
-        display:flex;align-items:center;justify-content:space-between;gap:8px;
+
+      #analysis-progress-shell{
+        height:7px;
+        border-radius:999px;
+        background:#242320;
+        overflow:hidden;
       }
-      .analysis-move{font-weight:800;font-size:.84rem;}
+
+      #analysis-progress{
+        width:0;
+        height:100%;
+        background:var(--green);
+        transition:width .15s linear;
+      }
+
+      /*
+       * Compact summary strip. The selected move is the real center of review.
+       */
+      #analysis-summary{
+        border:1px solid var(--line);
+        border-radius:9px;
+        padding:9px 11px;
+        background:#2b2a27;
+        flex:0 0 auto;
+      }
+
+      #analysis-summary.hidden{display:none!important;}
+
+      #analysis-summary .summary-big{
+        font-size:.82rem;
+        font-weight:850;
+      }
+
+      #analysis-summary .summary-small{
+        color:var(--muted);
+        font-size:.70rem;
+        margin-top:3px;
+        line-height:1.35;
+      }
+
+      /*
+       * Selected-move card — the Chess.com-style guided-review center.
+       */
+      #analysis-viewer{
+        border:1px solid var(--line);
+        border-radius:10px;
+        background:var(--panel2);
+        padding:12px;
+        display:flex;
+        flex-direction:column;
+        gap:9px;
+        flex:0 0 auto;
+      }
+
+      #analysis-viewer.hidden{display:none!important;}
+
+      #analysis-viewer-title{
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        gap:10px;
+      }
+
+      .analysis-selected-move{
+        font-size:1.02rem;
+        font-weight:900;
+      }
+
+      .analysis-feedback-line{
+        font-size:.82rem;
+        line-height:1.45;
+      }
+
+      .analysis-eval-grid{
+        display:grid;
+        grid-template-columns:repeat(3,1fr);
+        gap:7px;
+      }
+
+      .analysis-eval-box{
+        border:1px solid var(--line);
+        border-radius:7px;
+        background:#292825;
+        padding:7px 8px;
+        min-width:0;
+      }
+
+      .analysis-eval-label{
+        display:block;
+        color:var(--muted);
+        font-size:.62rem;
+        text-transform:uppercase;
+        letter-spacing:.04em;
+        margin-bottom:2px;
+      }
+
+      .analysis-eval-value{
+        display:block;
+        font-size:.78rem;
+        font-weight:850;
+        white-space:nowrap;
+        overflow:hidden;
+        text-overflow:ellipsis;
+      }
+
+      #analysis-viewer-pv{
+        color:var(--muted);
+        font-size:.72rem;
+        line-height:1.45;
+      }
+
+      .analysis-line-label{
+        color:var(--text);
+        font-weight:800;
+      }
+
+      #analysis-retry-status{
+        font-size:.74rem;
+        line-height:1.45;
+      }
+
+      .analysis-nav{
+        display:grid;
+        grid-template-columns:46px 1fr 46px;
+        gap:8px;
+      }
+
+      .analysis-nav .act{
+        min-height:38px;
+      }
+
+      /*
+       * Move-list toolbar + compact rows. Each move is now one small clickable
+       * line rather than a full engine card.
+       */
+      #analysis-list-head{
+        display:none;
+        align-items:center;
+        justify-content:space-between;
+        gap:10px;
+        flex:0 0 auto;
+        padding-top:1px;
+      }
+
+      #play-analysis.has-results #analysis-list-head{
+        display:flex;
+      }
+
+      .analysis-list-title{
+        font-size:.78rem;
+        font-weight:850;
+      }
+
+      .analysis-segmented{
+        display:flex;
+        padding:2px;
+        border:1px solid var(--line);
+        background:#292825;
+        border-radius:8px;
+      }
+
+      .analysis-segmented button{
+        border:0;
+        background:transparent;
+        color:var(--muted);
+        border-radius:6px;
+        padding:5px 8px;
+        font:inherit;
+        font-size:.68rem;
+        font-weight:800;
+        cursor:pointer;
+      }
+
+      .analysis-segmented button.active{
+        background:#45433f;
+        color:var(--text);
+      }
+
+      #analysis-results{
+        display:flex;
+        flex-direction:column;
+        gap:4px;
+        overflow-y:auto;
+        min-height:0;
+        flex:1 1 auto;
+        padding-right:3px;
+        overscroll-behavior:contain;
+        scrollbar-width:thin;
+      }
+
+      .analysis-row{
+        width:100%;
+        display:grid;
+        grid-template-columns:minmax(78px,.9fr) minmax(74px,.8fr) auto;
+        align-items:center;
+        gap:8px;
+        text-align:left;
+        border:1px solid transparent;
+        border-radius:7px;
+        background:transparent;
+        color:var(--text);
+        padding:7px 8px;
+        cursor:pointer;
+        font:inherit;
+      }
+
+      .analysis-row:hover{
+        background:#34332f;
+      }
+
+      .analysis-row.selected{
+        background:#3a3934;
+        border-color:var(--green);
+      }
+
+      .analysis-row.critical{
+        border-left:3px solid #d59b34;
+      }
+
+      .analysis-row.ct-filtered-out{
+        display:none;
+      }
+
+      .analysis-move{
+        font-weight:850;
+        font-size:.76rem;
+        white-space:nowrap;
+        overflow:hidden;
+        text-overflow:ellipsis;
+      }
+
+      .analysis-row-best{
+        color:var(--muted);
+        font-size:.68rem;
+        white-space:nowrap;
+        overflow:hidden;
+        text-overflow:ellipsis;
+      }
+
       .analysis-chip{
-        font-size:.68rem;font-weight:850;text-transform:uppercase;letter-spacing:.04em;
-        padding:4px 7px;border-radius:999px;background:#3a3935;color:#ddd;
+        justify-self:end;
+        font-size:.60rem;
+        font-weight:900;
+        text-transform:uppercase;
+        letter-spacing:.04em;
+        padding:4px 6px;
+        border-radius:999px;
+        background:#3a3935;
+        color:#ddd;
+        white-space:nowrap;
       }
+
       .analysis-chip.best{background:#315b34;color:#dff4df;}
       .analysis-chip.good{background:#3b4d3d;color:#e1eee2;}
       .analysis-chip.inaccuracy{background:#6c5a2a;color:#fff0bd;}
@@ -380,32 +663,47 @@
       .analysis-chip.blunder,
       .analysis-chip.missed-win,
       .analysis-chip.missed-mate{background:#742f2f;color:#ffd7d7;}
-      .analysis-row-mid{margin-top:7px;font-size:.75rem;line-height:1.48;}
-      .analysis-row-pv{margin-top:5px;color:var(--muted);font-size:.71rem;line-height:1.45;}
-      #analysis-viewer{
-        background:var(--panel2);border:1px solid var(--line);border-radius:9px;
-        padding:13px 15px;display:flex;flex-direction:column;gap:9px;
-      }
-      #analysis-viewer.hidden{display:none!important;}
-      #analysis-viewer-title{font-weight:850;}
-      #analysis-viewer-details{font-size:.76rem;line-height:1.55;color:var(--text);}
-      #analysis-viewer-pv{font-size:.73rem;line-height:1.5;color:var(--muted);}
-      #analysis-retry-status{font-size:.76rem;line-height:1.5;}
-      #analysis-method{
-        border-top:1px solid var(--line);padding-top:10px;
-      }
-      #board .ct-analysis-last::before{
-        content:"";position:absolute;inset:0;background:rgba(85,135,180,.24);
-        pointer-events:none;z-index:0;
-      }
-      @media(max-width:620px){
-        #play-analysis .analysis-controls{grid-template-columns:1fr;}
-        #analysis-results{max-height:360px;}
 
-        #play-game.ct-analysis-workspace #play-analysis{
+      #analysis-method{
+        flex:0 0 auto;
+        border-top:1px solid var(--line);
+        padding-top:7px;
+        color:var(--muted);
+        font-size:.70rem;
+      }
+
+      #analysis-method summary{
+        cursor:pointer;
+        color:var(--muted);
+        font-weight:750;
+      }
+
+      #analysis-method .analysis-method-body{
+        margin-top:7px;
+        line-height:1.5;
+      }
+
+      @media(max-width:620px){
+        #play-analysis .analysis-controls{
+          grid-template-columns:1fr;
+        }
+
+        #pane-play.ct-guided-review-open #play-analysis{
           max-height:none;
-          overflow-y:visible;
-          padding-right:0;
+          overflow:visible;
+        }
+
+        #analysis-results{
+          max-height:360px;
+          flex:none;
+        }
+
+        .analysis-eval-grid{
+          grid-template-columns:1fr;
+        }
+
+        .analysis-row{
+          grid-template-columns:minmax(82px,1fr) minmax(74px,1fr) auto;
         }
       }
     `;
@@ -432,58 +730,64 @@
     panel.innerHTML = `
       <div class="analysis-heading">
         <div>
-          <strong>Stockfish game review</strong>
-          <div class="note">Full-strength Stockfish 18 · completed game only</div>
+          <strong>Game review</strong>
+          <div class="note">Stockfish 18 · guided post-game review</div>
         </div>
         <button class="act" id="analysis-close" type="button">Close</button>
       </div>
 
-      <div class="analysis-controls">
-        <div class="analysis-field">
-          <label for="analysis-side">Moves to review</label>
-          <select id="analysis-side">
-            <option value="both">Both sides</option>
-            <option value="white">White only</option>
-            <option value="black">Black only</option>
-          </select>
+      <div id="analysis-setup">
+        <div class="analysis-controls">
+          <div class="analysis-field">
+            <label for="analysis-side">Review</label>
+            <select id="analysis-side">
+              <option value="both">Both sides</option>
+              <option value="white">White only</option>
+              <option value="black">Black only</option>
+            </select>
+          </div>
+          <div class="analysis-field">
+            <label for="analysis-depth">Engine time</label>
+            <select id="analysis-depth">
+              <option value="10">Quick · ~0.2 s</option>
+              <option value="12" selected>Normal · ~0.5 s</option>
+              <option value="14">Deep · ~1 s</option>
+              <option value="16">Very deep · ~2 s</option>
+              <option value="18">Maximum · ~4 s</option>
+            </select>
+          </div>
         </div>
-        <div class="analysis-field">
-          <label for="analysis-depth">Analysis speed</label>
-          <select id="analysis-depth">
-            <option value="10">Quick · ~0.2 s/search</option>
-            <option value="12" selected>Normal · ~0.5 s/search</option>
-            <option value="14">Deep · ~1 s/search</option>
-            <option value="16">Very deep · ~2 s/search</option>
-            <option value="18">Maximum · ~4 s/search</option>
-          </select>
+
+        <div class="btns">
+          <button class="act primary" id="analysis-run" type="button">Run analysis</button>
+          <button class="act" id="analysis-cancel" type="button" disabled>Cancel</button>
+        </div>
+
+        <div class="feedback neutral" id="analysis-status">
+          Choose what to review, then run Stockfish.
+        </div>
+
+        <div id="analysis-progress-shell" aria-label="Analysis progress">
+          <div id="analysis-progress"></div>
         </div>
       </div>
 
-      <div class="btns">
-        <button class="act primary" id="analysis-run" type="button">Run analysis</button>
-        <button class="act" id="analysis-cancel" type="button" disabled>Cancel</button>
-      </div>
-
-      <div class="feedback neutral" id="analysis-status">
-        Choose a side and analysis speed, then run the review.
-      </div>
-
-      <div id="analysis-progress-shell" aria-label="Analysis progress">
-        <div id="analysis-progress"></div>
+      <div id="analysis-review-meta">
+        <span id="analysis-review-meta-text"></span>
+        <button id="analysis-reanalyze" type="button">Analysis settings</button>
       </div>
 
       <div id="analysis-summary" class="hidden"></div>
-      <div id="analysis-results"></div>
 
       <div id="analysis-viewer" class="hidden">
         <div id="analysis-viewer-title"></div>
         <div id="analysis-viewer-details"></div>
         <div id="analysis-viewer-pv"></div>
 
-        <div class="btns">
-          <button class="act" id="analysis-prev" type="button">‹ Previous</button>
-          <button class="act" id="analysis-next" type="button">Next ›</button>
-          <button class="act wide" id="analysis-final" type="button">Final position</button>
+        <div class="analysis-nav">
+          <button class="act" id="analysis-prev" type="button" title="Previous reviewed move">‹</button>
+          <button class="act" id="analysis-next-critical" type="button">Next key move</button>
+          <button class="act" id="analysis-next" type="button" title="Next reviewed move">›</button>
         </div>
 
         <div class="btns">
@@ -491,18 +795,32 @@
           <button class="act" id="analysis-save" type="button">Turn into puzzle</button>
         </div>
 
+        <button class="act" id="analysis-final" type="button">Show final position</button>
+
         <div id="analysis-retry-status"></div>
       </div>
 
-      <div class="note" id="analysis-method">
-        Labels are trainer-defined, not Chess.com labels. The review analyzes each
-        required game position once at MultiPV 2. A played move is scored from the
-        next game position, with that score reversed to the original mover’s perspective.
-        Estimated win-chance loss:
-        under 5 points = Good, 5–12 = Inaccuracy, 12–25 = Mistake, 25+ = Blunder.
-        Forced-mate and clearly-winning-position losses can be labeled Missed mate or
-        Missed win. Engine scores shown below are from the mover's perspective.
+      <div id="analysis-list-head">
+        <span class="analysis-list-title">Moves</span>
+        <div class="analysis-segmented" aria-label="Move filter">
+          <button id="analysis-all-moves" type="button" class="active">All</button>
+          <button id="analysis-key-moves" type="button">Key moves</button>
+        </div>
       </div>
+
+      <div id="analysis-results"></div>
+
+      <details id="analysis-method">
+        <summary>How the review rates moves</summary>
+        <div class="analysis-method-body">
+          Ratings are trainer-defined, not Chess.com labels. The engine analyzes
+          each required game position once at MultiPV 2. A played move is scored
+          from the next game position, with that score reversed to the original
+          mover's perspective. Estimated win-chance loss: under 5 points = Good,
+          5–12 = Inaccuracy, 12–25 = Mistake, 25+ = Blunder. Forced-mate and
+          clearly-winning-position losses can be labeled Missed mate or Missed win.
+        </div>
+      </details>
     `;
 
     game.appendChild(panel);
@@ -528,7 +846,15 @@
       final: panel.querySelector('#analysis-final'),
       retry: panel.querySelector('#analysis-retry'),
       save: panel.querySelector('#analysis-save'),
-      retryStatus: panel.querySelector('#analysis-retry-status')
+      retryStatus: panel.querySelector('#analysis-retry-status'),
+      setup: panel.querySelector('#analysis-setup'),
+      reviewMeta: panel.querySelector('#analysis-review-meta'),
+      reviewMetaText: panel.querySelector('#analysis-review-meta-text'),
+      reanalyze: panel.querySelector('#analysis-reanalyze'),
+      nextCritical: panel.querySelector('#analysis-next-critical'),
+      listHead: panel.querySelector('#analysis-list-head'),
+      allMoves: panel.querySelector('#analysis-all-moves'),
+      keyMoves: panel.querySelector('#analysis-key-moves')
     };
 
     analyze.addEventListener('click', openAnalysis);
@@ -537,9 +863,26 @@
     ui.cancel.addEventListener('click', cancelAnalysis);
     ui.prev.addEventListener('click', function () { moveSelection(-1); });
     ui.next.addEventListener('click', function () { moveSelection(1); });
+    ui.nextCritical.addEventListener('click', function () { moveCriticalSelection(1); });
     ui.final.addEventListener('click', showFinalPosition);
     ui.retry.addEventListener('click', beginRetry);
     ui.save.addEventListener('click', saveSelectedPuzzle);
+
+    ui.reanalyze.addEventListener('click', function () {
+      ui.panel.classList.toggle('show-setup');
+      ui.reanalyze.textContent =
+        ui.panel.classList.contains('show-setup')
+          ? 'Hide settings'
+          : 'Analysis settings';
+    });
+
+    ui.allMoves.addEventListener('click', function () {
+      setMoveFilter(false);
+    });
+
+    ui.keyMoves.addEventListener('click', function () {
+      setMoveFilter(true);
+    });
 
     // Prevent game-state mutations from racing an active engine review.
     for (const id of ['play-takeback', 'play-rematch', 'play-new-settings']) {
@@ -604,16 +947,18 @@
       'neutral'
     );
 
+    A.keyOnly = false;
+    ui.panel.classList.remove('has-results', 'show-setup');
+    if (ui.allMoves) ui.allMoves.classList.add('active');
+    if (ui.keyMoves) ui.keyMoves.classList.remove('active');
+
+    const pane = document.getElementById('pane-play');
+    if (pane) pane.classList.add('ct-guided-review-open');
+
     const game = document.getElementById('play-game');
-    if (game) game.classList.add('ct-analysis-workspace');
+    if (game) game.classList.remove('ct-analysis-workspace');
 
     showFinalPosition();
-
-    // Keep the chessboard and review visible together. Build 2.2 previously
-    // forced the browser to scroll down to the appended analysis panel.
-    // The analysis now replaces the post-game controls in the right column,
-    // so no page-level scroll is necessary.
-    ui.panel.scrollTop = 0;
   }
 
   function closeAnalysis(restoreBoard) {
@@ -627,8 +972,13 @@
     A.open = false;
     ui.panel.classList.add('hidden');
 
+    const pane = document.getElementById('pane-play');
+    if (pane) pane.classList.remove('ct-guided-review-open');
+
     const game = document.getElementById('play-game');
     if (game) game.classList.remove('ct-analysis-workspace');
+
+    ui.panel.classList.remove('has-results', 'show-setup');
   }
 
   function buildPositions(snapshot) {
@@ -1205,7 +1555,10 @@
         'good'
       );
 
-      if (A.results.length) selectResult(A.results[0].ply);
+      if (A.results.length) {
+        const firstKey = A.results.find(row => row.critical);
+        selectResult((firstKey || A.results[0]).ply);
+      }
     } catch (error) {
       const cancelled =
         token !== A.token ||
@@ -1260,41 +1613,116 @@
     setAnalysisStatus('Stopping analysis…', 'neutral');
   }
 
+  function feedbackSentence(result) {
+    const label =
+      result && result.classification
+        ? result.classification.label
+        : 'Move';
+
+    const played = result ? result.san : 'this move';
+    const best = result && result.bestSan ? result.bestSan : 'another move';
+
+    if (label === 'Best') {
+      return 'You played ' + played + ' — Stockfish’s first choice.';
+    }
+
+    if (label === 'Good') {
+      return 'Solid move. Stockfish slightly preferred ' + best + '.';
+    }
+
+    if (label === 'Inaccuracy') {
+      return 'This gave up a small part of the position. ' + best + ' was better.';
+    }
+
+    if (label === 'Mistake') {
+      return 'This noticeably worsened the position. ' + best + ' was stronger.';
+    }
+
+    if (label === 'Blunder') {
+      return 'This sharply worsened the position. ' + best + ' was the key move.';
+    }
+
+    if (label === 'Missed win') {
+      return 'This missed a winning opportunity. ' + best + ' kept the advantage.';
+    }
+
+    if (label === 'Missed mate') {
+      return 'This missed a forced mate. ' + best + ' was the mating continuation.';
+    }
+
+    return 'You played ' + played + '. Stockfish preferred ' + best + '.';
+  }
+
+  function setMoveFilter(keyOnly) {
+    A.keyOnly = !!keyOnly;
+
+    if (ui.allMoves) ui.allMoves.classList.toggle('active', !A.keyOnly);
+    if (ui.keyMoves) ui.keyMoves.classList.toggle('active', A.keyOnly);
+
+    for (const row of ui.results.querySelectorAll('.analysis-row')) {
+      const isCritical = row.dataset.critical === '1';
+      row.classList.toggle(
+        'ct-filtered-out',
+        A.keyOnly && !isCritical
+      );
+    }
+  }
+
+  function moveCriticalSelection(direction) {
+    if (!A.results.length) return;
+
+    const critical = A.results.filter(row => row.critical);
+    if (!critical.length) return;
+
+    if (!A.selectedResult) {
+      selectResult(critical[0].ply);
+      return;
+    }
+
+    const currentIndex = A.results.indexOf(A.selectedResult);
+    const step = Number(direction) >= 0 ? 1 : -1;
+
+    if (step > 0) {
+      const next = critical.find(row => A.results.indexOf(row) > currentIndex);
+      if (next) selectResult(next.ply);
+      else selectResult(critical[0].ply);
+      return;
+    }
+
+    const prior = critical
+      .slice()
+      .reverse()
+      .find(row => A.results.indexOf(row) < currentIndex);
+
+    if (prior) selectResult(prior.ply);
+    else selectResult(critical[critical.length - 1].ply);
+  }
+
   function renderResultRow(result) {
     const row = document.createElement('button');
     row.type = 'button';
     row.className =
       'analysis-row' + (result.critical ? ' critical' : '');
     row.dataset.ply = String(result.ply);
+    row.dataset.critical = result.critical ? '1' : '0';
 
     const loss =
       result.classification && Number.isFinite(result.classification.lossPp)
-        ? result.classification.lossPp.toFixed(1) + ' pp'
-        : '—';
-
-    const gap =
-      Number.isFinite(result.bestSecondGapCp)
-        ? (result.bestSecondGapCp / 100).toFixed(2)
-        : null;
+        ? result.classification.lossPp.toFixed(1)
+        : '0.0';
 
     row.innerHTML = `
-      <div class="analysis-row-top">
-        <span class="analysis-move">${escapeHtml(Core.moveLabel(result.ply, result.san))}</span>
-        <span class="analysis-chip ${escapeHtml(result.classification.slug)}">
-          ${escapeHtml(result.classification.label)}
-        </span>
-      </div>
-      <div class="analysis-row-mid">
-        Best <strong>${escapeHtml(result.bestSan)}</strong>
-        · played ${escapeHtml(result.san)}
-        · loss ${escapeHtml(loss)}
-      </div>
-      <div class="analysis-row-pv">
-        Best ${escapeHtml(Core.formatScore(result.bestScore))}
-        · played ${escapeHtml(Core.formatScore(result.playedScore))}
-        ${gap ? ' · best-vs-second gap ' + escapeHtml(gap) : ''}
-        ${result.onlyMoveLike ? ' · only-move-like position' : ''}
-      </div>
+      <span class="analysis-move">
+        ${escapeHtml(Core.moveLabel(result.ply, result.san))}
+      </span>
+      <span class="analysis-row-best">
+        ${result.classification.label === 'Best'
+          ? 'top choice'
+          : 'best ' + escapeHtml(result.bestSan || '—') + ' · −' + escapeHtml(loss) + ' pp'}
+      </span>
+      <span class="analysis-chip ${escapeHtml(result.classification.slug)}">
+        ${escapeHtml(result.classification.label)}
+      </span>
     `;
 
     row.addEventListener('click', function () {
@@ -1302,16 +1730,28 @@
     });
 
     ui.results.appendChild(row);
+
+    if (A.keyOnly && !result.critical) {
+      row.classList.add('ct-filtered-out');
+    }
   }
 
   function renderSummary() {
     const summary = Core.summarize(A.results);
     const notable = [];
 
-    for (const label of ['Missed mate', 'Missed win', 'Blunder', 'Mistake', 'Inaccuracy']) {
+    for (const label of [
+      'Missed mate',
+      'Missed win',
+      'Blunder',
+      'Mistake',
+      'Inaccuracy'
+    ]) {
       if (summary.counts[label]) {
-        notable.push(summary.counts[label] + ' ' + label.toLowerCase() +
-          (summary.counts[label] === 1 ? '' : 's'));
+        notable.push(
+          summary.counts[label] + ' ' + label.toLowerCase() +
+          (summary.counts[label] === 1 ? '' : 's')
+        );
       }
     }
 
@@ -1319,45 +1759,36 @@
     const worstText =
       worst && worst.classification
         ? Core.moveLabel(worst.ply, worst.san) +
-          ' · ' + worst.classification.lossPp.toFixed(1) +
-          ' percentage-point estimated win-chance loss'
-        : 'No large swing found';
+          ' (' + worst.classification.label + ')'
+        : 'none';
 
     ui.summary.innerHTML = `
       <div class="summary-big">
-        ${summary.total} move${summary.total === 1 ? '' : 's'} analyzed
-        · ${summary.critical} critical position${summary.critical === 1 ? '' : 's'}
+        ${summary.total} reviewed · ${summary.critical} key move${summary.critical === 1 ? '' : 's'}
       </div>
       <div class="summary-small">
-        ${escapeHtml(notable.length ? notable.join(' · ') : 'No inaccuracies or worse by the selected thresholds.')}
-        <br>Largest swing: ${escapeHtml(worstText)}
+        ${escapeHtml(notable.length ? notable.join(' · ') : 'No inaccuracies or worse by the current thresholds.')}
+        · largest swing: ${escapeHtml(worstText)}
       </div>
-      <div id="analysis-critical"></div>
     `;
 
-    const criticalWrap = ui.summary.querySelector('#analysis-critical');
-    const critical = A.results
-      .filter(row => row.critical)
-      .slice()
-      .sort(
-        (a, b) =>
-          (b.classification.lossPp || 0) -
-          (a.classification.lossPp || 0)
-      )
-      .slice(0, 5);
-
-    for (const row of critical) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.textContent =
-        Core.moveLabel(row.ply, row.san) + ' · ' + row.classification.label;
-      button.addEventListener('click', function () {
-        selectResult(row.ply);
-      });
-      criticalWrap.appendChild(button);
-    }
-
     ui.summary.classList.remove('hidden');
+
+    const sideLabel =
+      A.side === 'white'
+        ? 'White only'
+        : A.side === 'black'
+          ? 'Black only'
+          : 'Both sides';
+
+    const profile = analysisProfile();
+
+    ui.reviewMetaText.textContent =
+      sideLabel + ' · ' + profile.name + ' · full Stockfish 18';
+
+    ui.panel.classList.add('has-results');
+    ui.panel.classList.remove('show-setup');
+    ui.reanalyze.textContent = 'Analysis settings';
   }
 
   function selectResult(ply) {
@@ -1393,24 +1824,52 @@
         ? (result.bestSecondGapCp / 100).toFixed(2)
         : '—';
 
-    ui.viewerTitle.textContent =
-      'Position before ' + Core.moveLabel(result.ply, result.san);
-
-    ui.viewerDetails.innerHTML = `
-      <strong>${escapeHtml(result.classification.label)}</strong>
-      · estimated win-chance loss ${escapeHtml(loss)} pp<br>
-      Played: <strong>${escapeHtml(result.san)}</strong>
-      (${escapeHtml(Core.formatScore(result.playedScore))})<br>
-      Best: <strong>${escapeHtml(result.bestSan)}</strong>
-      (${escapeHtml(Core.formatScore(result.bestScore))})<br>
-      Second choice: ${escapeHtml(result.secondSan || '—')}
-      · best-vs-second gap ${escapeHtml(gap)}
-      ${result.onlyMoveLike ? '<br><strong>Large best-vs-second gap: this behaves like an only-move position.</strong>' : ''}
+    ui.viewerTitle.innerHTML = `
+      <span class="analysis-selected-move">
+        ${escapeHtml(Core.moveLabel(result.ply, result.san))}
+      </span>
+      <span class="analysis-chip ${escapeHtml(result.classification.slug)}">
+        ${escapeHtml(result.classification.label)}
+      </span>
     `;
 
-    ui.viewerPv.innerHTML =
-      'Best line: ' + escapeHtml(result.bestPvSan) +
-      '<br>Played-move line: ' + escapeHtml(result.playedPvSan);
+    ui.viewerDetails.innerHTML = `
+      <div class="analysis-feedback-line">
+        ${escapeHtml(feedbackSentence(result))}
+      </div>
+
+      <div class="analysis-eval-grid">
+        <div class="analysis-eval-box">
+          <span class="analysis-eval-label">Played</span>
+          <span class="analysis-eval-value">
+            ${escapeHtml(result.san)} · ${escapeHtml(Core.formatScore(result.playedScore))}
+          </span>
+        </div>
+        <div class="analysis-eval-box">
+          <span class="analysis-eval-label">Best</span>
+          <span class="analysis-eval-value">
+            ${escapeHtml(result.bestSan || '—')} · ${escapeHtml(Core.formatScore(result.bestScore))}
+          </span>
+        </div>
+        <div class="analysis-eval-box">
+          <span class="analysis-eval-label">Loss</span>
+          <span class="analysis-eval-value">${escapeHtml(loss)} pp</span>
+        </div>
+      </div>
+
+      ${result.onlyMoveLike
+        ? '<div class="note"><strong>Key choice:</strong> Stockfish sees a large gap to the second-best move.</div>'
+        : ''}
+    `;
+
+    ui.viewerPv.innerHTML = `
+      <span class="analysis-line-label">Best line:</span>
+      ${escapeHtml(result.bestPvSan)}
+      <br>
+      <span class="analysis-line-label">Second choice:</span>
+      ${escapeHtml(result.secondSan || '—')}
+      · gap ${escapeHtml(gap)}
+    `;
 
     ui.retry.disabled = A.running;
     ui.save.disabled =
@@ -1425,12 +1884,21 @@
         : 'Puzzle save for inaccuracies+';
 
     ui.retryStatus.textContent =
-      'Board shows the position before the selected move.';
+      'The board shows the position immediately before this move.';
 
     const index = A.results.indexOf(result);
     ui.prev.disabled = index <= 0;
     ui.next.disabled = index < 0 || index >= A.results.length - 1;
+    ui.nextCritical.disabled = !A.results.some(row => row.critical);
+
     ui.viewer.classList.remove('hidden');
+
+    const selectedRow = ui.results.querySelector(
+      '.analysis-row[data-ply="' + String(result.ply) + '"]'
+    );
+    if (selectedRow && typeof selectedRow.scrollIntoView === 'function') {
+      selectedRow.scrollIntoView({ block: 'nearest' });
+    }
   }
 
   function moveSelection(delta) {
@@ -1825,7 +2293,8 @@
     method: 'single-pass-cached-game-states-v3',
     scheduler: 'bounded-movetime-multipv2-only-with-watchdog',
     playedMoveEvaluation: 'next-state-score-inversion',
-    workspaceLayout: 'side-by-side-in-place-2.2.4',
+    workspaceLayout: 'guided-review-panel-2.2.5',
+    reviewUx: 'selected-move-first-compact-list-key-navigation',
     labels: 'estimated-win-chance-loss',
     open: openAnalysis,
     close: function () { closeAnalysis(true); },
